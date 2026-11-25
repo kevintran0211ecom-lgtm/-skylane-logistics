@@ -69,11 +69,16 @@ function seed() {
       { id: "u-huy", name: "Huy", role: "SALE" },
       { id: "u-khanh", name: "Khánh", role: "SALE" },
     ],
-    customers: [
-      { code: "SKL116", name: "Chị Thanh", group: "NHOM_BUSINESS", adjust: "0", saleId: "u-huy", currency: "VND" },
-      { code: "SKL170", name: "Minh Nhật", group: "NHOM_BUSINESS", adjust: "-3", saleId: "u-khanh", currency: "VND" },
-      { code: "SKL126", name: "Chị Amb", group: null, adjust: "5", saleId: "u-khanh", currency: "VND" },
+    groups: [
+      { code: "NHOM_BUSINESS", name: "Business", adjust: "8", active: true, note: "Có bảng giá riêng VNFZZXR, UPS HAN S5500" },
+      { code: "CA_NHAN", name: "Cá nhân", adjust: "15", active: true, note: "" },
     ],
+    customers: [
+      { code: "SKL116", name: "Chị Thanh", group: "NHOM_BUSINESS", adjust: "0", saleId: "u-huy", currency: "VND", sheet: "https://docs.google.com/spreadsheets/d/1eO6Zd1WSjJP2NFUaAPWDoBtTAAcWOMXRNmHR_ILH1vw" },
+      { code: "SKL170", name: "Minh Nhật", group: "NHOM_BUSINESS", adjust: "-3", saleId: "u-khanh", currency: "VND", sheet: "" },
+      { code: "SKL126", name: "Chị Amb", group: "CA_NHAN", adjust: "0", saleId: "u-khanh", currency: "VND", sheet: "" },
+    ],
+    drafts: [], sheetVisible: 2,
     routes: [
       ["VNFZZXR", "YUN", "EPK", 15000], ["VN-YTYCPREC", "YUN", "EPK", 5000], ["VNTHZXR", "YUN", "EPK", 6000], ["VNBKZXR", "YUN", "EPK", 5000],
       ["UPS HAN S5500", "HYE", "CPN", 5500], ["UPS HAN D", "HYE", "CPN", 6000], ["UPS SAVER SS", "LY TUONG", "CPN", 5500],
@@ -152,7 +157,7 @@ function reprice(S, o, cat = catalogOf(S)) {
   if (o.locked) return false;
   const c = custOf(S, o.customer);
   const input = {
-    customerCode: o.customer, priceGroupCode: c?.group, priceAdjustPct: c?.adjust, routeCode: o.route, assignedRouteCode: o.assigned,
+    customerCode: o.customer, priceGroupCode: c?.group, groupAdjustPct: S.groups.find((g) => g.code === c?.group)?.adjust, priceAdjustPct: c?.adjust, routeCode: o.route, assignedRouteCode: o.assigned,
     destinationIso2: o.iso2, shippedAt: o.shippedAt, createdAt: o.createdAt,
     packages: o.packages.map((p) => ({ lengthCm: p.l, widthCm: p.w, heightCm: p.h, actualWeight: p.kg })),
     manualOverrides: o.overrides,
@@ -215,24 +220,89 @@ function saveReceipt(S, { customer, amount, allocs, bankRef = "", payer = "", no
     if (Number(a.amount) > st.total - st.paid) throw new Error(`Phân bổ cho ${st.no} vượt số còn nợ.`);
   }
   const no = nextNo(S, RF.RECEIPT_PREFIX, day, RF.formatReceiptNo);
-  for (const a of allocs) {
-    const st = S.statements.find((s) => s.id === a.sid);
-    st.paid += Number(a.amount);
+  const r = { id: S.seq++, no, customer, amount: amt, allocs: allocs.map((a) => ({ sid: a.sid, amount: Number(a.amount) })), bankRef, payer, note, account, proofs, status: "ACTIVE", receivedAt: `${day}T${new Date().toTimeString().slice(0, 5)}:00+07:00` };
+  S.receipts.push(r);
+  recalcPaid(S);
+  return r;
+}
+/** Số đã thu của bảng kê = tổng phân bổ từ phiếu thu còn hiệu lực (như trigger DB) → trạng thái công nợ bảng kê & đơn */
+function recalcPaid(S) {
+  const paid = new Map();
+  for (const r of S.receipts) {
+    if (r.status === "CANCELLED") { r.allocs = []; }
+    r.allocated = r.allocs.reduce((t, a) => t + Number(a.amount), 0);
+    r.overpaid = r.status === "CANCELLED" ? 0 : r.amount - r.allocated;
+    for (const a of r.allocs) paid.set(a.sid, (paid.get(a.sid) || 0) + Number(a.amount));
+  }
+  for (const st of S.statements) {
+    if (st.status !== "ACTIVE") continue;
+    st.paid = paid.get(st.id) || 0;
     st.debt = debtOf(st.total, st.paid);
     st.items.forEach((it) => { const o = S.orders.find((x) => x.id === it.orderId); if (o) o.debt = st.debt; });
   }
-  const r = { id: S.seq++, no, customer, amount: amt, allocated: total, overpaid: amt - total, allocs, bankRef, payer, note, account, proofs, receivedAt: `${day}T${new Date().toTimeString().slice(0, 5)}:00+07:00` };
-  S.receipts.push(r);
-  return r;
+}
+const statusList = (ids) => [...new Set(ids)].map((id) => S.statements.find((s) => s.id === id)).filter(Boolean).map((s) => `${s.no} → ${s.debt}`).join("; ");
+
+
+// ---- Đơn hàng dự báo (vùng chờ trước Vận đơn) ----
+const usedKeys = () => new Set([...S.orders.map((o) => `${o.customer}|${o.bill}`), ...S.drafts.map((d) => d.d.orderKey)]);
+const pendingDrafts = () => S.drafts.filter((d) => d.status === "CHO_XAC_NHAN" && inScope(d.d.customerCode)).length;
+function stageDrafts(list, source, label) {
+  const keys = usedKeys();
+  let added = 0;
+  for (const d of list) {
+    if (keys.has(d.orderKey)) continue;
+    const { rows, ...data } = d;
+    S.drafts.push({ id: S.seq++, d: data, source, label, status: "CHO_XAC_NHAN", at: new Date().toISOString(), decidedAt: null, reason: null });
+    keys.add(d.orderKey);
+    added++;
+  }
+  return added;
+}
+function confirmDrafts(ids) {
+  const cat = catalogOf(S);
+  let n = 0, warn = 0;
+  for (const dr of S.drafts.filter((x) => ids.includes(x.id) && x.status === "CHO_XAC_NHAN")) {
+    const d = dr.d;
+    const o = newOrder(S, { customer: d.customerCode, bill: d.billCode, tracking: d.trackingNumber, route: d.routeCode, assigned: d.assignedRouteCode, iso2: d.destinationIso2, createdAt: d.createdAt || dr.at, shippedAt: d.shippedAt, receiver: d.receiverName, note: d.note, source: dr.source, packages: d.packages.map((p) => ({ l: p.lengthCm, w: p.widthCm, h: p.heightCm, kg: p.actualWeight })) });
+    reprice(S, o, cat);
+    S.orders.push(o);
+    Object.assign(dr, { status: "DA_XAC_NHAN", decidedAt: new Date().toISOString(), orderId: o.id });
+    n++; if (o.warn) warn++;
+  }
+  return { n, warn };
+}
+// Google Sheet của khách (mô phỏng): SKL116 nhập đơn trên link SkyLane cấp, đúng cột tab DON
+const SHEET_HEAD = ["Thời gian phát sinh đơn", "STT", "Mã vận đơn", "Tuyến vận chuyển", "Giá trị khai báo", "Tên hàng tiếng Việt", "Tên hàng tiếng anh", "Mã HS (hải quan)", "Người nhận", "Địa chỉ người nhận", "Thành phố người nhận", "Bang/tỉnh người nhận", "Mã bưu chính người nhận", "SĐT người nhận", "Mail người nhận", "Điểm đến", "Số kiện", "Trọng lượng thực tế(kg)", "Dài", "Rộng", "Cao"];
+const SHEET_ROWS = [
+  ["24/11/2026 15:19:43", 1, "#AP3001", "VNFZZXR", 20, "Quần áo", "", "", "Olivia Brown", "12 Main St, Austin, TX", "Austin", "TX", "73301", "+15125550101", "", "US", 1, "0,62", 30, 22, 8],
+  ["24/11/2026 16:02:10", 2, "#AP3002", "VN-YTYCPREC", 15, "Áo thun", "", "", "Noah Wilson", "88 Pine Rd, Denver, CO", "Denver", "CO", "80202", "+13035550188", "", "US", 1, "0,95", 28, 20, 12],
+  ["25/11/2026 08:45:00", 3, "#AP3003", "VNFZZXR", 25, "Túi xách", "", "", "Emma Stone", "5 Oxford St, London", "London", "", "W1D 1AN", "+447700900123", "", "GB", 1, "1,4", 35, 25, 15],
+  ["25/11/2026 09:30:00", 4, "#AP3004", "UPS HAN S5500", 60, "Giày", "", "", "Liam Smith", "40 Queen St, Toronto, ON", "Toronto", "ON", "M5H 2N2", "+14165550199", "", "CA", 2, "6,8", 40, 30, 25],
+  ["25/11/2026 10:10:00", 5, "#AP3005", "VNFZZXR", 20, "Mũ", "", "", "Ava Taylor", "9 Elm St, Boston, MA", "Boston", "MA", "02108", "+16175550111", "", "USA", 1, "0,3", 20, 15, 10],
+  ["25/11/2026 14:20:00", 6, "#AP3006", "VNTHZXR", 18, "Váy", "", "", "Mia Clark", "77 Lake Ave, Chicago, IL", "Chicago", "IL", "60601", "+13125550177", "", "US", 1, "0,8", 30, 20, 10],
+  ["25/11/2026 15:05:00", 7, "#AP3007", "VNFZZXR", 22, "Quần jean", "", "", "James Lee", "3 Bay St, Miami, FL", "Miami", "FL", "33101", "+13055550166", "", "US", 1, "1,1", 32, 24, 10],
+  ["25/11/2026 16:40:00", 8, "#AP3008", "CT UK-NK", 120, "Hàng gia dụng", "", "", "Sophie Turner", "21 King St, Manchester", "Manchester", "", "M2 4WU", "+447700900456", "", "GB", 2, "28", 60, 40, 40],
+];
+function syncSheet(code) {
+  const c = custOf(S, code);
+  if (!c?.sheet) return { error: `${code} chưa có link Google Sheet.` };
+  S.sheetVisible = Math.min(SHEET_ROWS.length, (S.sheetVisible || 0) + 3); // mô phỏng: khách vừa nhập thêm đơn
+  const res = IP.parseOrderSheet([SHEET_HEAD, ...SHEET_ROWS.slice(0, S.sheetVisible)], { defaultCustomerCode: code });
+  const keys = usedKeys();
+  const fresh = res.drafts.filter((d) => !keys.has(d.orderKey));
+  const added = stageDrafts(fresh, "SYNC", "Google Sheet · tab DON");
+  return { added, total: res.drafts.length, skipped: res.drafts.length - added, errors: res.errors };
 }
 
 // =============================================================================
 // Trạng thái, lưu trữ, quyền
 // =============================================================================
-const KEY = "skylane-demo-v1";
+const KEY = "skylane-demo-v2";
 let S = null;
 try { S = JSON.parse(localStorage.getItem(KEY) || "null"); } catch { S = null; }
-if (!S || !S.orders) S = seed();
+const freshData = () => { S = seed(); syncSheet("SKL116"); }; // khách đã nhập sẵn vài đơn trên Google Sheet
+if (!S || !S.orders || !S.drafts) freshData();
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ ...S, receipts: S.receipts.map((r) => ({ ...r, proofs: [] })) })); } catch {} };
 save();
 
@@ -244,11 +314,13 @@ const scopedCustomers = () => S.customers.filter((c) => inScope(c.code));
 
 const VIEWS = {
   dashboard: { label: "Tổng quan", perm: "dashboard.view", group: "Vận hành" },
+  "don-du-bao": { label: "Đơn hàng dự báo", perm: "drafts.view", group: "Vận hành" },
   "don-hang": { label: "Vận đơn", perm: "orders.view", group: "Vận hành" },
   "bao-gia": { label: "Tra cứu giá gốc", perm: "quote.view", group: "Vận hành" },
   "bang-ke": { label: "Bảng kê", perm: "statements.view", group: "Tài chính" },
   "doi-soat": { label: "Đối soát thu tiền", perm: "receipts.view", group: "Tài chính" },
   "khach-hang": { label: "Khách hàng", perm: "catalog.view", group: "Danh mục" },
+  "nhom-gia": { label: "Nhóm giá", perm: "catalog.view", group: "Danh mục" },
   tuyen: { label: "Tuyến vận chuyển", perm: "catalog.view", group: "Danh mục" },
   "bang-gia": { label: "Kho bảng giá", perm: "pricing.view", group: "Danh mục" },
 };
@@ -256,6 +328,7 @@ const home = () => P.homeFor(me().role).slice(1);
 const ui = {
   dash: { from: "2026-11-01", to: today() < "2026-11-01" ? "2026-11-30" : today(), cust: "", sale: "", table: false },
   orders: { q: "", status: "", page: 1, sel: new Set() },
+  drafts: { status: "CHO_XAC_NHAN", q: "", cust: "", sel: new Set() },
   quote: { to: "US", kg: "1,5", vol: "DIM", l: "30", w: "20", h: "15", cbm: "", date: today(), ran: true },
   ver: null, verKind: "", verRoute: "", st: null, stNew: null, rc: null,
 };
@@ -314,7 +387,7 @@ let chartRO = null;
 function render() {
   const v = current();
   if (chartRO) { chartRO.disconnect(); chartRO = null; }
-  const fn = { dashboard: vDashboard, "don-hang": vOrders, "bao-gia": vQuote, "bang-ke": vStatements, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
+  const fn = { dashboard: vDashboard, "don-du-bao": vDrafts, "nhom-gia": vGroups, "don-hang": vOrders, "bao-gia": vQuote, "bang-ke": vStatements, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
   $("#app").innerHTML = shell(fn());
   if (v === "dashboard") drawChart();
 }
@@ -439,7 +512,7 @@ function vOrders() {
   const tabs = ["", ...STATUSES].map((s) => `<button class="px-3 py-2 text-sm ${f.status === s ? "font-semibold" : "muted"}" style="border-bottom:2px solid ${f.status === s ? "var(--brand)" : "transparent"}" data-a="o-tab" data-v="${s}">${s || "Tất cả"} <span class="text-xs">(${(s ? all.filter((o) => o.status === s) : all).length})</span></button>`).join("");
   const allOnPage = page.length && page.every((o) => f.sel.has(o.id));
   return head("Quản lý vận đơn", "Đơn chưa khóa giá tự tính lại giá gốc, giá bán, lợi nhuận khi đổi kích thước, cân hoặc tuyến.",
-    `${bulk ? `<button class="btn o" data-a="bulk-open" ${f.sel.size ? "" : "disabled"}>Sửa đổi hàng loạt${f.sel.size ? ` (${f.sel.size})` : ""}</button>` : ""}${can("orders.import") ? `<button class="btn o" data-a="imp-open">Import đơn</button>` : ""}${can("orders.create") ? `<button class="btn" data-a="create-open">+ Tạo đơn</button>` : ""}`) + `
+    `${bulk ? `<button class="btn o" data-a="bulk-open" ${f.sel.size ? "" : "disabled"}>Sửa đổi hàng loạt${f.sel.size ? ` (${f.sel.size})` : ""}</button>` : ""}${can("drafts.view") ? `<a class="btn o" href="#don-du-bao">Nhận đơn mới${pendingDrafts() ? ` <span class="b b-info">${pendingDrafts()}</span>` : ""}</a>` : ""}`) + `
   <div class="mb-3 flex flex-wrap border-b line">${tabs}</div>
   <div class="mb-3 flex flex-wrap items-center gap-2"><input class="inp" style="max-width:380px" placeholder="Tìm mã vận đơn, tracking, mã/tên khách hàng" value="${esc(f.q)}" data-c="o-q">${f.sel.size ? `<span class="text-sm muted">Đã chọn ${f.sel.size} <button class="btn g sm" data-a="sel-clear">Bỏ chọn</button></span>` : ""}</div>
   <div class="card scroll"><table class="t"><thead><tr>
@@ -478,7 +551,7 @@ function readPkgs(root) {
   return out;
 }
 function createDialog() {
-  openDialog("Tạo vận đơn nội bộ", `<form id="f-create" class="grid gap-4">
+  openDialog("Nhập tay đơn nội bộ → Đơn hàng dự báo", `<form id="f-create" class="grid gap-4">
     <div class="grid gap-3 sm:grid-cols-3">
       <label class="f"><span>Khách hàng *</span><select class="inp" name="customer">${S.customers.map((c) => `<option value="${c.code}">${c.code} — ${esc(c.name)}</option>`).join("")}</select></label>
       <label class="f"><span>Mã vận đơn *</span><input class="inp" name="bill" required></label>
@@ -490,7 +563,7 @@ function createDialog() {
       <label class="f sm:col-span-2"><span>Người nhận</span><input class="inp" name="receiver"></label>
     </div>
     <fieldset class="card grid gap-2 p-3"><legend class="px-1 text-sm font-medium">Kiện hàng</legend>${pkHead}<div id="pks" class="grid gap-2">${pkRow({ l: "30", w: "20", h: "15", kg: "0.8" })}</div><div><button type="button" class="btn o sm" data-a="pk-add">+ Thêm kiện</button></div></fieldset>
-    <div class="flex justify-end gap-2"><button type="button" class="btn o" data-a="close">Hủy</button><button class="btn" data-a="create-save" type="button">Tạo đơn & tính giá</button></div></form>`);
+    <div class="flex justify-end gap-2"><button type="button" class="btn o" data-a="close">Hủy</button><button class="btn" data-a="create-save" type="button">Thêm vào chờ xác nhận</button></div></form>`);
 }
 function bulkDialog() {
   const allowed = P.BULK_FIELDS_BY_ROLE[me().role];
@@ -575,17 +648,35 @@ const ORDER_SAMPLE = [
   ["25/11/2026 10:21:00", "6", "#AP2001", "VNFZZXR", "20", "Quần áo", "David Lee", "US", "1", "0,786", "34", "23", "11"],
 ].map((r) => r.join("\t")).join("\n");
 function importDialog() {
-  openDialog("Import vận đơn (dán từ Excel / Google Sheet)", `<div class="grid gap-3">
-    <p class="text-sm muted">Chọn vùng dữ liệu (gồm dòng tiêu đề) trong Excel/Google Sheet → Ctrl+C → dán vào ô dưới. Cột nhận theo <b>tên tiêu đề</b> (không phân biệt dấu, thứ tự). Đơn trùng order_key (Mã KH|Mã vận đơn) tự động bị chặn.</p>
+  openDialog("Import đơn từ file Excel (mẫu SKL116)", `<div class="grid gap-3">
+    <p class="text-sm muted">Chọn file <b>.xlsx</b> theo mẫu cột tab DON của file SKL116 (Thời gian phát sinh đơn, Mã vận đơn, Tuyến vận chuyển, … Dài, Rộng, Cao) — hoặc copy vùng dữ liệu rồi dán vào ô dưới. Cột nhận theo tên tiêu đề. Đơn hợp lệ vào <b>Đơn hàng dự báo</b> chờ xác nhận; đơn trùng order_key bị chặn.</p>
+    <label class="f"><span>File Excel (.xlsx)</span><input type="file" class="inp" accept=".xlsx,.xls,.csv" data-c="imp-file" style="padding-top:6px"></label>
     <div class="grid gap-3 sm:grid-cols-[1fr_auto]"><label class="f"><span>Khách hàng mặc định (khi không có cột Mã khách hàng)</span><select class="inp" id="imp-cust">${S.customers.map((c) => `<option value="${c.code}">${c.code} — ${esc(c.name)}</option>`).join("")}</select></label><div class="flex items-end"><button class="btn o" data-a="imp-sample">Dán dữ liệu mẫu (tab DON)</button></div></div>
-    <textarea class="inp" id="imp-text" rows="8" placeholder="Dán dữ liệu ở đây…" style="font-family:ui-monospace,monospace;font-size:12px"></textarea>
-    <div class="flex gap-2"><button class="btn o" data-a="imp-check">Kiểm tra dữ liệu</button><button class="btn" data-a="imp-commit" id="imp-commit" disabled>Nhập đơn</button></div>
+    <textarea class="inp" id="imp-text" data-c="imp-text" rows="8" placeholder="Dán dữ liệu ở đây…" style="font-family:ui-monospace,monospace;font-size:12px"></textarea>
+    <div class="flex gap-2"><button class="btn o" data-a="imp-check">Kiểm tra dữ liệu</button><button class="btn" data-a="imp-commit" id="imp-commit" disabled>Đưa vào chờ xác nhận</button></div>
     <div id="imp-out"></div></div>`, true);
 }
+function readImportFile(file) {
+  if (!file) return;
+  if (typeof XLSX === "undefined") return toast("Không tải được thư viện đọc Excel — hãy dán dữ liệu thay thế.", "bad");
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const wb = XLSX.read(r.result, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames.find((n) => n.trim().toUpperCase() === "DON") || wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+      $("#imp-text").value = rows.map((row) => row.map((v) => (v === null ? "" : String(v).replace(/\t|\n/g, " "))).join("\t")).join("\n");
+      ui.impRows = rows; // giữ nguyên kiểu số / ngày Excel để đọc chính xác
+      ui.impLabel = `${file.name} · ${wb.SheetNames.includes("DON") ? "DON" : wb.SheetNames[0]}`;
+      A["imp-check"]();
+    } catch { toast("Không đọc được file Excel.", "bad"); }
+  };
+  r.readAsArrayBuffer(file);
+}
 function analyzeImport() {
-  const rows = parseTsv($("#imp-text").value);
+  const rows = ui.impRows || parseTsv($("#imp-text").value);
   const res = IP.parseOrderSheet(rows, { defaultCustomerCode: $("#imp-cust").value });
-  const keys = new Set(S.orders.map((o) => `${o.customer}|${o.bill}`));
+  const keys = usedKeys();
   const valid = [], dupDb = [], errors = [...res.errors];
   for (const d of res.drafts) {
     const bad = [];
@@ -596,6 +687,38 @@ function analyzeImport() {
     else valid.push(d);
   }
   return { res, valid, dupDb, errors };
+}
+
+
+// =============================================================================
+// ĐƠN HÀNG DỰ BÁO
+// =============================================================================
+const DRAFT_TABS = [["CHO_XAC_NHAN", "Chờ xác nhận"], ["DA_XAC_NHAN", "Đã xác nhận"], ["DA_LOAI", "Đã loại"]];
+const SRC = { SYNC: ["Google Sheet", "ok"], IMPORT: ["Excel", "info"], MANUAL: ["Nhập tay", "muted"] };
+const dtVi = (iso) => (iso ? new Date(iso).toLocaleString("vi-VN", { timeZone: "Asia/Saigon", dateStyle: "short", timeStyle: "short" }) : "–");
+function vDrafts() {
+  const f = ui.drafts, manage = can("drafts.manage"), q = f.q.trim().toLowerCase();
+  const scoped = S.drafts.filter((x) => inScope(x.d.customerCode) && (!f.cust || x.d.customerCode === f.cust) && (!q || [x.d.billCode, x.d.customerCode, cust(x.d.customerCode)?.name].some((v) => String(v || "").toLowerCase().includes(q))));
+  const rows = scoped.filter((x) => x.status === f.status).sort((a, b) => ((a.d.createdAt || a.at) < (b.d.createdAt || b.at) ? 1 : -1));
+  const selectable = manage && f.status !== "DA_XAC_NHAN";
+  for (const id of [...f.sel]) if (!rows.some((r) => r.id === id)) f.sel.delete(id);
+  const all = rows.length && rows.every((r) => f.sel.has(r.id));
+  const tabs = DRAFT_TABS.map(([k, l]) => `<button class="px-3 py-2 text-sm ${f.status === k ? "font-semibold" : "muted"}" style="border-bottom:2px solid ${f.status === k ? "var(--brand)" : "transparent"}" data-a="dr-tab" data-v="${k}">${l} <span class="text-xs">(${scoped.filter((x) => x.status === k).length})</span></button>`).join("");
+  const bar = selectable && f.sel.size ? `<div class="card mb-3 flex flex-wrap items-center justify-between gap-2 p-3" style="position:sticky;top:0;z-index:5"><span>Đã chọn <b>${f.sel.size}</b> đơn <button class="btn g sm" data-a="dr-clear">Bỏ chọn</button></span><span class="flex gap-2">${f.status === "CHO_XAC_NHAN" ? `<button class="btn o" data-a="dr-reject">Loại</button><button class="btn" data-a="dr-confirm">Xác nhận ${f.sel.size} đơn → Vận đơn</button>` : `<button class="btn o" data-a="dr-restore">Đưa về chờ xác nhận</button>`}</span></div>` : "";
+  return head("Đơn hàng dự báo", "Đơn khách nhập trên Google Sheet, file Excel hoặc nhập tay nội bộ vào đây trước. Kiểm tra, chọn đơn rồi bấm Xác nhận để chuyển sang Vận đơn.",
+    manage ? `<button class="btn o" data-a="sync-open">⟳ Đồng bộ Google Sheet</button><button class="btn o" data-a="imp-open">Import Excel</button><button class="btn" data-a="create-open">+ Nhập tay</button>` : "") + `
+  <div class="mb-3 flex flex-wrap border-b line">${tabs}</div>
+  <div class="mb-3 flex flex-wrap items-center gap-2"><select class="inp" style="width:220px" data-c="dr-cust"><option value="">Tất cả khách hàng</option>${scopedCustomers().map((c) => `<option value="${c.code}" ${c.code === f.cust ? "selected" : ""}>${c.code} — ${esc(c.name)}</option>`).join("")}</select><input class="inp" style="max-width:320px" placeholder="Tìm mã vận đơn, mã/tên khách hàng" value="${esc(f.q)}" data-c="dr-q"></div>
+  ${bar}
+  <div class="card scroll"><table class="t"><thead><tr>${selectable ? `<th><input type="checkbox" data-c="dr-all" ${all ? "checked" : ""} aria-label="Chọn tất cả"></th>` : ""}<th>Mã vận đơn</th><th>Khách hàng</th><th>Tuyến</th><th>Đến</th><th>Người nhận</th><th class="num">Kiện</th><th class="num">Cân thực</th><th>Nguồn</th><th>Phát sinh</th>${f.status === "CHO_XAC_NHAN" ? "" : `<th>${f.status === "DA_LOAI" ? "Đã loại lúc" : "Xác nhận lúc"}</th>`}</tr></thead><tbody>
+  ${rows.map((x) => { const d = x.d; const w = d.packages.reduce((t, p) => t + Number(p.actualWeight), 0); return `<tr style="${f.sel.has(x.id) ? "background:var(--soft)" : ""}">${selectable ? `<td><input type="checkbox" data-c="dr-sel" value="${x.id}" ${f.sel.has(x.id) ? "checked" : ""} aria-label="Chọn ${esc(d.billCode)}"></td>` : ""}
+    <td><b>${esc(d.billCode)}</b>${d.trackingNumber ? `<div class="text-xs muted">${esc(d.trackingNumber)}</div>` : ""}</td><td><b>${d.customerCode}</b><div class="text-xs muted">${esc(cust(d.customerCode)?.name)}</div></td>
+    <td class="whitespace-nowrap">${esc(d.routeCode)}${d.assignedRouteCode && d.assignedRouteCode !== d.routeCode ? `<div class="text-xs" style="color:#b45309">→ ${esc(d.assignedRouteCode)}</div>` : ""}</td><td>${d.destinationIso2}</td>
+    <td>${esc(d.receiverName || "–")}${d.goodsDescription ? `<div class="text-xs muted">${esc(d.goodsDescription)}</div>` : ""}</td><td class="num">${d.packages.length}</td><td class="num">${kg(w)}</td>
+    <td><span title="${esc(x.label)}">${badge(...SRC[x.source])}</span></td><td class="num">${dtVi(d.createdAt || x.at)}</td>
+    ${f.status === "CHO_XAC_NHAN" ? "" : `<td class="num">${dtVi(x.decidedAt)}${x.reason ? `<div class="text-xs muted">${esc(x.reason)}</div>` : ""}</td>`}</tr>`; }).join("") || `<tr><td colspan="12" class="py-8 text-center muted">${f.status === "CHO_XAC_NHAN" ? "Không có đơn chờ xác nhận. Bấm “Đồng bộ Google Sheet” để lấy đơn khách vừa nhập." : "Không có đơn."}</td></tr>`}
+  </tbody></table></div>
+  <p class="mt-2 text-xs muted">Đơn đã xác nhận hoặc đã loại không bị đồng bộ lại. Mỗi lần bấm “Đồng bộ Google Sheet” ở bản chạy thử, khách SKL116 được mô phỏng là vừa nhập thêm vài đơn.</p>`;
 }
 
 // =============================================================================
@@ -801,17 +924,20 @@ function vReconcile() {
   <div class="card mb-4 flex flex-wrap items-center gap-2 p-3"><span class="text-sm font-medium">Khách hàng</span><select class="inp" style="width:280px" data-c="rc-cust">${scopedCustomers().map((c) => `<option value="${c.code}" ${c.code === rc.cust ? "selected" : ""}>${c.code} — ${esc(c.name)}</option>`).join("")}</select>${manage ? "" : `<span class="text-xs muted">(chỉ xem — vai trò của bạn không lập phiếu thu)</span>`}</div>
   ${rc.done ? `<div class="card mb-4 p-3" style="border-color:#059669">${esc(rc.done)}</div>` : ""}
   <div class="grid gap-4 ${manage ? "xl:grid-cols-[400px_1fr]" : ""}">${left}
-  <section class="grid gap-4"><div class="grid gap-3 sm:grid-cols-4">${stat("Tổng bảng kê", total)}${stat("Đã thanh toán", paid, "#047857")}${stat("Còn nợ", total - paid, "#dc2626", true)}${stat("Thu thừa (số dư có)", credit, "var(--accent)")}</div>
+  <section class="grid gap-4"><div class="grid gap-3 sm:grid-cols-4">${stat("Tổng bảng kê", total)}${stat("Đã thanh toán", paid, "#047857")}${stat("Còn nợ", total - paid, "#dc2626", true)}${stat("Thu thừa (số dư có)", credit, "var(--accent)").replace(/<\/div>$/, manage && credit > 0 && openSts(rc.cust).length ? `<button class="btn o sm mt-2 w-full" data-a="credit-open">Dùng cho bảng kê</button></div>` : "</div>")}</div>
   <div id="rc-sug">${rcSugHtml()}</div>
   <div class="card scroll"><table class="t"><thead><tr><th>Bảng kê</th><th>Ngày tạo</th><th class="num">Tổng tiền</th><th class="num">Đã thu</th><th class="num">Còn nợ</th><th class="num" style="width:190px">Phân bổ lần này</th><th class="num">Còn thiếu sau thu</th></tr></thead><tbody>
   ${openSts(rc.cust).map((s) => { const a = Number(RF.parseThousands(rc.alloc[s.id] || "")) || 0; return `<tr><td><b>${s.no}</b><div class="text-xs muted">${s.items.length} đơn · ${s.debt}</div></td><td class="num">${V.viDate(s.issuedAt.slice(0, 10))}</td><td class="num">${money(s.total)}</td><td class="num muted">${money(s.paid)}</td><td class="num font-semibold">${money(s.total - s.paid)}</td>
     <td><div class="flex gap-1"><input class="inp" style="height:32px;text-align:right" inputmode="numeric" data-c="rc-alloc" data-id="${s.id}" value="${esc(rc.alloc[s.id] || "")}" ${manage ? "" : "disabled"}><button class="btn g sm" data-a="rc-full" data-id="${s.id}" ${manage ? "" : "disabled"}>Đủ</button></div></td>
     <td class="num" id="rc-after-${s.id}">${afterHtml(s, a)}</td></tr>`; }).join("") || `<tr><td colspan="7" class="py-6 text-center muted">Không còn bảng kê nợ.</td></tr>`}
   </tbody></table></div>
-  <div><h3 class="mb-2 text-sm font-semibold">Phiếu thu gần đây</h3><div class="card scroll"><table class="t"><thead><tr><th>Mã phiếu</th><th>Thời gian</th><th class="num">Số tiền</th><th>Phân bổ</th><th class="num">Thu thừa</th><th>Minh chứng</th></tr></thead><tbody>
-  ${S.receipts.filter((r) => r.customer === rc.cust).slice().reverse().map((r) => `<tr><td><b>${r.no}</b></td><td class="num">${V.viDate(r.receivedAt.slice(0, 10))} ${r.receivedAt.slice(11, 16)}</td><td class="num">${money(r.amount)}</td><td class="text-xs muted">${r.allocs.map((a) => `${S.statements.find((s) => s.id === a.sid)?.no}: ${money(a.amount)}`).join(", ") || "—"}</td><td class="num" style="color:var(--accent)">${r.overpaid ? money(r.overpaid) : "—"}</td><td>${r.proofs.length ? r.proofs.map((p) => `<img src="${p}" alt="" class="inline-block h-8 w-8 rounded object-cover">`).join(" ") : '<span class="text-xs muted">—</span>'}</td></tr>`).join("") || `<tr><td colspan="6" class="py-4 text-center muted">Chưa có phiếu thu.</td></tr>`}
+  <div><h3 class="mb-2 text-sm font-semibold">Phiếu thu gần đây</h3><div class="card scroll"><table class="t"><thead><tr><th>Mã phiếu</th><th>Thời gian</th><th class="num">Số tiền</th><th>Phân bổ</th><th class="num">Thu thừa</th><th>Minh chứng</th>${manage ? "<th></th>" : ""}</tr></thead><tbody>
+  ${S.receipts.filter((r) => r.customer === rc.cust).slice().reverse().map((r) => `<tr style="${r.status === "CANCELLED" ? "opacity:.55" : ""}"><td><b>${r.no}</b>${r.status === "CANCELLED" ? `<div>${badge("Đã hủy", "bad")}</div><div class="text-xs muted">${esc(r.cancelReason || "")}</div>` : ""}</td><td class="num">${V.viDate(r.receivedAt.slice(0, 10))} ${r.receivedAt.slice(11, 16)}</td><td class="num">${money(r.amount)}</td><td class="text-xs muted">${r.allocs.map((a) => `${S.statements.find((s) => s.id === a.sid)?.no}: ${money(a.amount)}`).join(", ") || "—"}</td><td class="num" style="color:var(--accent)">${r.overpaid ? money(r.overpaid) : "—"}</td><td>${r.proofs.length ? r.proofs.map((p) => `<img src="${p}" alt="" class="inline-block h-8 w-8 rounded object-cover">`).join(" ") : '<span class="text-xs muted">—</span>'}</td>${manage ? `<td class="whitespace-nowrap">${r.status === "CANCELLED" ? "" : `<button class="btn g sm" data-a="rc-edit" data-id="${r.id}">Sửa</button><button class="btn g sm" data-a="rc-cancel" data-id="${r.id}">Hủy</button>`}</td>` : ""}</tr>`).join("") || `<tr><td colspan="7" class="py-4 text-center muted">Chưa có phiếu thu.</td></tr>`}
   </tbody></table></div></div></section></div>`;
 }
+
+const allocTable = (lines) => lines.length ? `<div class="card scroll"><table class="t"><thead><tr><th>Bảng kê</th><th class="num">Tối đa</th><th class="num" style="width:220px">Phân bổ</th></tr></thead><tbody>${lines.map((l) => `<tr class="al" data-sid="${l.sid}" data-max="${l.max}" data-no="${l.no}"><td><b>${l.no}</b></td><td class="num muted">${money(l.max)}</td><td><div class="flex gap-1"><input class="inp" data-c="fmt" style="height:32px;text-align:right" inputmode="numeric" value="${l.v ? RF.formatThousands(String(l.v)) : ""}"><button class="btn g sm" data-a="al-full">Đủ</button></div></td></tr>`).join("")}</tbody></table></div>` : `<p class="text-sm muted">Không có bảng kê còn nợ.</p>`;
+const readAllocTable = (box) => $$(".al", box).map((tr) => ({ sid: Number(tr.dataset.sid), no: tr.dataset.no, max: Number(tr.dataset.max), amount: Number(RF.parseThousands($("input", tr).value) || 0) })).filter((a) => a.amount > 0);
 const afterHtml = (s, a) => (a > 0 ? (s.total - s.paid - a <= 0 ? '<span style="color:#047857">Đã đủ</span>' : money(s.total - s.paid - a)) : "—");
 const proofsHtml = () => ui.rc.proofs.map((p, i) => `<span class="relative"><img src="${p}" alt="Minh chứng ${i + 1}" class="h-16 w-16 rounded object-cover"><button class="btn g sm absolute -right-2 -top-2" style="height:20px;padding:0 5px;background:var(--card)" data-a="rc-proof-del" data-i="${i}">✕</button></span>`).join("") || '<span class="text-xs muted">Chưa có ảnh</span>';
 function rcSumHtml() {
@@ -859,7 +985,14 @@ function vCustomers() {
   const m = can("catalog.manage");
   return head("Khách hàng", "Sale phụ trách, nhóm giá mặc định và % điều chỉnh quyết định giá bán.") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã KH</th><th>Tên</th><th>Sale phụ trách</th><th>Nhóm giá</th><th class="num">Điều chỉnh</th><th class="num">Số đơn</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
   ${S.customers.map((c) => `<tr><td><b>${c.code}</b></td><td>${esc(c.name)}</td><td>${esc(S.users.find((u) => u.id === c.saleId)?.name || "—")}</td><td>${c.group ? badge(c.group, "info") : '<span class="muted">Chung</span>'}</td><td class="num">${Number(c.adjust) > 0 ? "+" : ""}${Number(c.adjust)}%</td><td class="num">${S.orders.filter((o) => o.customer === c.code).length}</td>${m ? `<td><button class="btn g sm" data-a="cu-edit" data-id="${c.code}">Sửa</button></td>` : ""}</tr>`).join("")}</tbody></table></div>
-  <p class="mt-2 text-xs muted">Ưu tiên giá bán: giá riêng Mã KH (SKL116 có giá riêng tuyến VNFZZXR) → nhóm giá × (1 + %) → bảng giá chung × (1 + %). Sửa % sẽ tính lại ngay đơn chưa khóa giá.</p>`;
+  <p class="mt-2 text-xs muted">Ưu tiên giá bán: giá riêng Mã KH (SKL116 có giá riêng tuyến VNFZZXR) → bảng giá riêng của nhóm × (1 + % khách) → bảng giá chung × (1 + % nhóm) × (1 + % khách). Sửa sẽ tính lại ngay đơn chưa khóa giá.</p>`;
+}
+function vGroups() {
+  const m = can("catalog.manage");
+  const own = (g) => [...new Set(S.versions.filter((v) => v.priceGroupCode === g.code && v.kind === "SELL" && (v.status || "ACTIVE") === "ACTIVE" && (!v.effectiveTo || v.effectiveTo >= today())).map((v) => v.routeCode))];
+  return head("Nhóm giá", "Mỗi nhóm khai báo % so với bảng giá chung. Tuyến nào nhóm có bảng giá bán riêng thì dùng bảng riêng, không cộng %.", m ? `<button class="btn" data-a="gr-edit" data-id="">+ Thêm nhóm giá</button>` : "") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã nhóm</th><th>Tên</th><th class="num">% so với giá chung</th><th>Bảng giá riêng</th><th class="num">Số khách</th><th>Trạng thái</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
+  ${S.groups.map((g) => { const n = Number(g.adjust); const r = own(g); return `<tr><td><b>${esc(g.code)}</b></td><td>${esc(g.name)}</td><td class="num font-semibold" style="color:${n < 0 ? "#047857" : n > 0 ? "#b45309" : "inherit"}">${n > 0 ? "+" : ""}${n.toLocaleString("vi-VN")}%</td><td>${r.length ? r.map((x) => badge(x, "info")).join(" ") : '<span class="muted">Không — dùng giá chung</span>'}</td><td class="num">${S.customers.filter((c) => c.group === g.code).length}</td><td>${g.active ? badge("Hoạt động", "ok") : badge("Ngừng")}</td>${m ? `<td><button class="btn g sm" data-a="gr-edit" data-id="${esc(g.code)}">Sửa</button></td>` : ""}</tr>`; }).join("") || `<tr><td colspan="7" class="py-6 text-center muted">Chưa có nhóm giá.</td></tr>`}</tbody></table></div>
+  <p class="mt-2 text-xs muted">Thử: đổi % của nhóm CA_NHAN rồi xem giá bán các đơn của SKL126 trong Vận đơn thay đổi ngay (đơn chưa khóa giá). NHOM_BUSINESS có bảng giá riêng tuyến VNFZZXR & UPS HAN S5500 nên đơn các tuyến đó không bị cộng %.</p>`;
 }
 function vRoutes() {
   const m = can("catalog.manage");
@@ -873,11 +1006,39 @@ function vRoutes() {
 // =============================================================================
 const A = {
   close: closeDialog,
-  reset: () => { S = seed(); ui.orders.sel.clear(); ui.rc = null; ui.st = ui.stNew = ui.ver = null; save(); render(); toast("Đã đặt lại dữ liệu mẫu."); },
+  reset: () => { freshData(); ui.orders.sel.clear(); ui.rc = null; ui.st = ui.stNew = ui.ver = null; save(); render(); toast("Đã đặt lại dữ liệu mẫu."); },
   "dash-table": () => { ui.dash.table = !ui.dash.table; render(); },
   "o-tab": (el) => { ui.orders.status = el.dataset.v; ui.orders.page = 1; render(); },
   "o-page": (el) => { ui.orders.page = Number(el.dataset.v); render(); },
   "sel-clear": () => { ui.orders.sel.clear(); render(); },
+  "dr-tab": (el) => { ui.drafts.status = el.dataset.v; ui.drafts.sel.clear(); render(); },
+  "dr-clear": () => { ui.drafts.sel.clear(); render(); },
+  "dr-confirm": () => {
+    const r = confirmDrafts([...ui.drafts.sel]); ui.drafts.sel.clear(); save(); render();
+    toast(`Đã chuyển ${r.n} đơn sang Vận đơn và tính giá${r.warn ? `; ${r.warn} đơn chưa tra được giá (⚠)` : ""}.`, r.warn ? "warn" : "ok");
+  },
+  "dr-reject": () => openDialog(`Loại ${ui.drafts.sel.size} đơn`, `<div class="grid gap-3"><p class="text-sm muted">Đơn bị loại không chuyển sang Vận đơn và không bị đồng bộ lại. Có thể đưa về chờ xác nhận ở tab “Đã loại”.</p><label class="f"><span>Lý do</span><textarea class="inp" id="dr-reason" rows="3" placeholder="VD: khách hủy, nhập trùng…"></textarea></label><div class="flex justify-end gap-2"><button class="btn o" data-a="close">Không</button><button class="btn d" data-a="dr-reject-ok">Loại đơn</button></div></div>`),
+  "dr-reject-ok": () => {
+    const reason = $("#dr-reason").value.trim() || null; let n = 0;
+    S.drafts.forEach((x) => { if (ui.drafts.sel.has(x.id) && x.status === "CHO_XAC_NHAN") { Object.assign(x, { status: "DA_LOAI", reason, decidedAt: new Date().toISOString() }); n++; } });
+    ui.drafts.sel.clear(); save(); closeDialog(); render(); toast(`Đã loại ${n} đơn.`, "warn");
+  },
+  "dr-restore": () => {
+    let n = 0; S.drafts.forEach((x) => { if (ui.drafts.sel.has(x.id) && x.status === "DA_LOAI") { Object.assign(x, { status: "CHO_XAC_NHAN", reason: null, decidedAt: null }); n++; } });
+    ui.drafts.sel.clear(); save(); render(); toast(`Đã đưa ${n} đơn về chờ xác nhận.`);
+  },
+  "sync-open": () => {
+    const list = scopedCustomers();
+    openDialog("Đồng bộ đơn từ Google Sheet của khách", `<div class="grid gap-3"><p class="text-sm muted">Mỗi khách nhập đơn trên link Google Sheet do SkyLane cấp (đúng cột tab DON). Bấm đồng bộ để lấy đơn mới về mục Chờ xác nhận; đơn đã có bị bỏ qua.</p>
+      <div class="card scroll"><table class="t"><thead><tr><th>Khách hàng</th><th>Link Google Sheet</th><th></th></tr></thead><tbody>${list.map((c) => `<tr><td><b>${c.code}</b> — ${esc(c.name)}</td><td class="text-xs" style="max-width:360px;word-break:break-all">${c.sheet ? esc(c.sheet) : '<span class="muted">Chưa cấp link (sửa ở Khách hàng)</span>'}</td><td>${c.sheet ? `<button class="btn sm" data-a="sync-run" data-id="${c.code}">Đồng bộ ngay</button>` : ""}</td></tr>`).join("")}</tbody></table></div>
+      <p class="text-xs muted">Bản chạy thử không đọc được Google Sheet thật (trình duyệt chặn mạng) — dữ liệu khách nhập được mô phỏng. Bản thật đọc trực tiếp sheet qua link chia sẻ.</p></div>`, true);
+  },
+  "sync-run": (el) => {
+    const r = syncSheet(el.dataset.id);
+    if (r.error) return toast(r.error, "bad");
+    save(); closeDialog(); ui.drafts.status = "CHO_XAC_NHAN"; render();
+    toast(`Đồng bộ ${el.dataset.id}: ${r.added} đơn mới vào chờ xác nhận, bỏ qua ${r.skipped} đơn đã có${r.errors.length ? `, ${r.errors.length} dòng lỗi (${r.errors.map((e) => e.message).join("; ")})` : ""}.`, r.errors.length ? "warn" : "ok");
+  },
   "create-open": createDialog,
   "pk-add": () => $("#pks").insertAdjacentHTML("beforeend", pkRow()),
   "pk-del": (el) => { const rows = $$(".pk", el.closest("#pks")); if (rows.length > 1) el.closest(".pk").remove(); else $$("input", el.closest(".pk")).forEach((i) => (i.value = "")); },
@@ -886,11 +1047,11 @@ const A = {
     const bill = String(fd.get("bill")).trim().toUpperCase(), c = fd.get("customer"), iso2 = String(fd.get("iso2")).trim().toUpperCase();
     if (!bill) return toast("Nhập mã vận đơn.", "bad");
     if (!/^[A-Z]{2}$/.test(iso2)) return toast("Điểm đến phải là mã ISO2.", "bad");
-    if (S.orders.some((o) => o.customer === c && o.bill === bill)) return toast(`Trùng order_key ${c}|${bill} — đơn đã tồn tại.`, "bad");
+    if (usedKeys().has(`${c}|${bill}`)) return toast(`Trùng order_key ${c}|${bill} — đơn đã có trong Vận đơn hoặc Đơn hàng dự báo.`, "bad");
     let packages; try { packages = readPkgs($("#f-create")); } catch (e) { return toast(e.message, "bad"); }
-    const o = newOrder(S, { customer: c, bill, tracking: fd.get("tracking"), route: fd.get("route"), assigned: fd.get("assigned"), iso2, receiver: fd.get("receiver"), shippedAt: fd.get("shipped") ? fd.get("shipped") + "T10:00:00+07:00" : null, createdAt: new Date().toISOString(), packages });
-    reprice(S, o); S.orders.push(o); save(); closeDialog(); ui.orders.status = ""; render();
-    toast(`Đã tạo ${bill}: tính phí ${kg(o.billed)} kg${can("orders.viewMoney") ? `, giá bán ${money(o.sell)}, giá gốc ${money(o.cost)}` : ""}${o.warn ? " — ⚠ " + o.warn : ""}.`, o.warn ? "warn" : "ok");
+    stageDrafts([{ customerCode: c, billCode: bill, orderKey: `${c}|${bill}`, trackingNumber: String(fd.get("tracking") || "") || null, routeCode: fd.get("route"), assignedRouteCode: fd.get("assigned") || null, destinationIso2: iso2, createdAt: null, shippedAt: fd.get("shipped") ? fd.get("shipped") + "T10:00:00+07:00" : null, receiverName: String(fd.get("receiver") || "") || null, goodsDescription: null, note: null, packages: packages.map((p) => ({ lengthCm: p.l, widthCm: p.w, heightCm: p.h, actualWeight: p.kg })) }], "MANUAL", "Nhập tay");
+    save(); closeDialog(); ui.drafts.status = "CHO_XAC_NHAN"; location.hash = "don-du-bao"; render();
+    toast(`Đã thêm ${bill} vào Đơn hàng dự báo — chọn đơn và bấm Xác nhận để chuyển sang Vận đơn.`);
   },
   "bulk-open": bulkDialog,
   "bulk-save": applyBulk,
@@ -905,13 +1066,13 @@ const A = {
     o.packages = packages; reprice(S, o); save(); closeDialog(); render();
     toast(o.locked ? "Đã lưu kiện — đơn đã khóa giá nên giữ nguyên cân & tiền." : `Đã lưu ${packages.length} kiện. Tính phí ${kg(before.billed)} → ${kg(o.billed)} kg${can("orders.viewMoney") ? `; giá bán ${money(before.sell)} → ${money(o.sell)}` : ""}.`);
   },
-  "imp-open": importDialog,
-  "imp-sample": () => { $("#imp-text").value = ORDER_SAMPLE; $("#imp-cust").value = "SKL116"; },
+  "imp-open": () => { ui.impRows = null; ui.impLabel = null; importDialog(); },
+  "imp-sample": () => { ui.impRows = null; ui.impLabel = "Dữ liệu mẫu (tab DON)"; $("#imp-text").value = ORDER_SAMPLE; $("#imp-cust").value = "SKL116"; },
   "imp-check": () => {
     const a = analyzeImport();
     $("#imp-commit").disabled = !a.valid.length;
-    $("#imp-commit").textContent = `Nhập ${a.valid.length} đơn mới`;
-    $("#imp-out").innerHTML = `<div class="flex flex-wrap gap-2 text-sm">${badge(`${a.valid.length} đơn mới · ${a.valid.reduce((t, d) => t + d.packages.length, 0)} kiện`, "ok")}${a.dupDb.length ? badge(`${a.dupDb.length} trùng trong hệ thống`, "warn") : ""}${a.res.duplicatesInFile.length ? badge(`${a.res.duplicatesInFile.length} trùng trong file`, "warn") : ""}${a.errors.length ? badge(`${a.errors.length} dòng lỗi`, "bad") : ""}</div>
+    $("#imp-commit").textContent = `Đưa ${a.valid.length} đơn vào chờ xác nhận`;
+    $("#imp-out").innerHTML = `<div class="flex flex-wrap gap-2 text-sm">${badge(`${a.valid.length} đơn mới · ${a.valid.reduce((t, d) => t + d.packages.length, 0)} kiện`, "ok")}${a.dupDb.length ? badge(`${a.dupDb.length} đã có (Vận đơn / Đơn dự báo)`, "warn") : ""}${a.res.duplicatesInFile.length ? badge(`${a.res.duplicatesInFile.length} trùng trong file`, "warn") : ""}${a.errors.length ? badge(`${a.errors.length} dòng lỗi`, "bad") : ""}</div>
       ${a.res.ignoredColumns.length ? `<p class="mt-1 text-xs muted">Cột không dùng: ${esc(a.res.ignoredColumns.join(", "))}</p>` : ""}
       ${a.errors.length ? `<ul class="mt-2 list-disc pl-5 text-xs" style="color:#dc2626">${a.errors.map((e) => `<li>${e.row ? "Dòng " + e.row : ""}${e.billCode ? " · " + esc(e.billCode) : ""}: ${esc(e.message)}</li>`).join("")}</ul>` : ""}
       ${a.dupDb.length || a.res.duplicatesInFile.length ? `<p class="mt-2 text-xs" style="color:#b45309">Bị chặn trùng order_key: ${esc([...a.dupDb, ...a.res.duplicatesInFile.map((d) => `dòng ${d.row} (${d.orderKey})`)].join(", "))}</p>` : ""}
@@ -919,13 +1080,10 @@ const A = {
       ${a.valid.length ? `<div class="card scroll mt-2"><table class="t"><thead><tr><th>order_key</th><th>Tuyến</th><th>Đến</th><th class="num">Kiện</th><th>Ngày phát sinh</th></tr></thead><tbody>${a.valid.map((d) => `<tr><td><b>${esc(d.orderKey)}</b></td><td>${esc(d.routeCode)}</td><td>${d.destinationIso2}</td><td class="num">${d.packages.length}</td><td class="num">${esc((d.createdAt || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
   },
   "imp-commit": () => {
-    const a = analyzeImport(), cat = catalogOf(S);
-    for (const d of a.valid) {
-      const o = newOrder(S, { customer: d.customerCode, bill: d.billCode, tracking: d.trackingNumber, route: d.routeCode, assigned: d.assignedRouteCode, iso2: d.destinationIso2, createdAt: d.createdAt || new Date().toISOString(), shippedAt: d.shippedAt, receiver: d.receiverName, note: d.note, source: "IMPORT", packages: d.packages.map((p) => ({ l: p.lengthCm, w: p.widthCm, h: p.heightCm, kg: p.actualWeight })) });
-      reprice(S, o, cat); S.orders.push(o);
-    }
-    save(); closeDialog(); ui.orders.status = ""; render();
-    toast(`Đã nhập ${a.valid.length} đơn, chặn ${a.dupDb.length + a.res.duplicatesInFile.length} đơn trùng, bỏ qua ${a.errors.length} dòng lỗi.`);
+    const a = analyzeImport();
+    stageDrafts(a.valid, "IMPORT", ui.impLabel || "Dán từ Excel");
+    save(); closeDialog(); ui.drafts.status = "CHO_XAC_NHAN"; render();
+    toast(`Đã đưa ${a.valid.length} đơn vào Đơn hàng dự báo, chặn ${a.dupDb.length + a.res.duplicatesInFile.length} đơn trùng, bỏ qua ${a.errors.length} dòng lỗi.`);
   },
   "quote-run": () => { $$("[data-q]").forEach((i) => (ui.quote[i.dataset.q] = i.value)); ui.quote.ran = true; render(); },
   "ver-open": (el, e) => { e.preventDefault(); ui.ver = Number(el.dataset.id); render(); },
@@ -978,14 +1136,71 @@ const A = {
     const tsv = [["STT", "Thời gian", "Mã vận đơn", "Tracking", "Điểm Đến", "Người nhận", "Số kiện", "Trọng lượng tính phí", "Tuyến vận chuyển", "Chi phí", "Ghi chú"].join("\t"), ...s.items.map((i) => [i.line, i.date, i.bill, i.tracking, i.iso2, i.receiver, i.pkgs, String(i.billed).replace(".", ","), i.route, i.amount, i.note].join("\t")), ["", "", "", "", "", "", "", "", "TỔNG", s.total, "VND"].join("\t")].join("\n");
     try { await navigator.clipboard.writeText(tsv); toast("Đã sao chép — dán vào Excel."); } catch { toast("Trình duyệt chặn sao chép.", "warn"); }
   },
-  "st-cancel": (el) => openDialog("Hủy bảng kê", `<div class="grid gap-3" data-id="${el.dataset.id}" id="f-cancel"><p class="text-sm muted">Bảng kê được đánh dấu “Đã hủy” (vẫn lưu lịch sử). Đơn không thuộc bảng kê hiệu lực khác về “Chưa thanh toán”; giá đơn vẫn khóa.</p><label class="f"><span>Lý do hủy</span><textarea class="inp" id="cancel-reason" rows="3"></textarea></label><div class="flex justify-end gap-2"><button class="btn o" data-a="close">Không hủy</button><button class="btn d" data-a="st-cancel-ok">Xác nhận hủy</button></div></div>`),
+  "st-cancel": (el) => openDialog("Hủy bảng kê", `<div class="grid gap-3" data-id="${el.dataset.id}" id="f-cancel"><p class="text-sm muted">Bảng kê được đánh dấu “Đã hủy” (vẫn lưu lịch sử). Đơn không thuộc bảng kê hiệu lực khác về “Chưa thanh toán”, được mở khóa giá và tính lại giá ngay. Bảng kê đã có thu tiền: hủy hoặc sửa phiếu thu ở Đối soát trước.</p><label class="f"><span>Lý do hủy</span><textarea class="inp" id="cancel-reason" rows="3"></textarea></label><div class="flex justify-end gap-2"><button class="btn o" data-a="close">Không hủy</button><button class="btn d" data-a="st-cancel-ok">Xác nhận hủy</button></div></div>`),
   "st-cancel-ok": () => {
     const s = S.statements.find((x) => x.id === Number($("#f-cancel").dataset.id));
     s.status = "CANCELLED"; s.cancelReason = $("#cancel-reason").value.trim();
-    let n = 0;
-    s.items.forEach((it) => { const o = S.orders.find((x) => x.id === it.orderId); const other = S.statements.some((x) => x !== s && x.status === "ACTIVE" && x.items.some((i) => i.orderId === it.orderId)); if (o && !other) { o.debt = "Chưa thanh toán"; n++; } });
-    save(); closeDialog(); render(); toast(`Đã hủy ${s.no}; hoàn “Chưa thanh toán” cho ${n}/${s.items.length} đơn.`, "warn");
+    let n = 0; const cat = catalogOf(S);
+    s.items.forEach((it) => { const o = S.orders.find((x) => x.id === it.orderId); const other = S.statements.some((x) => x !== s && x.status === "ACTIVE" && x.items.some((i) => i.orderId === it.orderId)); if (o && !other) { o.debt = "Chưa thanh toán"; o.locked = false; reprice(S, o, cat); n++; } });
+    save(); closeDialog(); render(); toast(`Đã hủy ${s.no}; ${n}/${s.items.length} đơn về “Chưa thanh toán”, đã mở khóa giá và tính lại giá.`, "warn");
   },
+  "rc-cancel": (el) => {
+    const r = S.receipts.find((x) => x.id === Number(el.dataset.id));
+    openDialog(`Hủy phiếu thu ${r.no}`, `<div class="grid gap-3" id="f-rcx" data-id="${r.id}"><p class="text-sm muted">Phiếu thu ${money(r.amount)} đ được đánh dấu “Đã hủy” và giữ lịch sử. Toàn bộ phân bổ bị gỡ: bảng kê & đơn hàng trở về trạng thái công nợ như trước khi nhận tiền${r.overpaid ? "; số Thu thừa của phiếu này cũng mất" : ""}.</p>${r.allocs.length ? `<p class="rounded p-2 text-xs" style="background:var(--soft)">Đang phân bổ: ${r.allocs.map((a) => `${S.statements.find((s) => s.id === a.sid)?.no}: ${money(a.amount)}`).join(", ")}</p>` : ""}<label class="f"><span>Lý do hủy</span><textarea class="inp" id="rcx-reason" rows="2" placeholder="VD: nhập nhầm khách, khách hoàn tiền…"></textarea></label><div class="flex justify-end gap-2"><button class="btn o" data-a="close">Không hủy</button><button class="btn d" data-a="rc-cancel-ok">Xác nhận hủy</button></div></div>`);
+  },
+  "rc-cancel-ok": () => {
+    const r = S.receipts.find((x) => x.id === Number($("#f-rcx").dataset.id));
+    const ids = r.allocs.map((a) => a.sid);
+    Object.assign(r, { status: "CANCELLED", cancelReason: $("#rcx-reason").value.trim(), allocs: [] });
+    recalcPaid(S); save(); closeDialog(); ui.rc.done = `Đã hủy phiếu thu ${r.no}; công nợ trả về như trước khi nhận${ids.length ? ` (${statusList(ids)})` : ""}.`; render();
+  },
+  "rc-edit": (el) => {
+    const r = S.receipts.find((x) => x.id === Number(el.dataset.id));
+    const lines = [...r.allocs.map((a) => { const st = S.statements.find((s) => s.id === a.sid); return { sid: st.id, no: st.no, max: st.total - st.paid + Number(a.amount), v: a.amount }; }),
+      ...openSts(r.customer).filter((st) => !r.allocs.some((a) => a.sid === st.id)).map((st) => ({ sid: st.id, no: st.no, max: st.total - st.paid, v: 0 }))];
+    openDialog(`Sửa phiếu thu ${r.no}`, `<div class="grid gap-3" id="f-rce" data-id="${r.id}">
+      <div class="grid gap-3 sm:grid-cols-3"><label class="f"><span>Số tiền nhận (VND)</span><input class="inp" name="amount" data-c="fmt" value="${RF.formatThousands(String(r.amount))}" style="text-align:right;font-weight:600"></label><label class="f"><span>Mã giao dịch</span><input class="inp" name="bankRef" value="${esc(r.bankRef)}"></label><label class="f"><span>Người chuyển</span><input class="inp" name="payer" value="${esc(r.payer)}"></label></div>
+      ${allocTable(lines)}<div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy bỏ</button><button class="btn" data-a="rc-edit-save">Lưu thay đổi</button></div></div>`, true);
+  },
+  "rc-edit-save": () => {
+    const box = $("#f-rce"), r = S.receipts.find((x) => x.id === Number(box.dataset.id));
+    const amount = Number(RF.parseThousands($("[name=amount]", box).value) || 0), allocs = readAllocTable(box);
+    if (!(amount > 0)) return toast("Nhập số tiền nhận.", "bad");
+    const bad = allocs.find((a) => a.amount > a.max); if (bad) return toast(`Phân bổ cho ${bad.no} vượt tối đa.`, "bad");
+    if (allocs.reduce((t, a) => t + a.amount, 0) > amount) return toast("Tổng phân bổ vượt quá số tiền nhận.", "bad");
+    const ids = [...r.allocs.map((a) => a.sid), ...allocs.map((a) => a.sid)];
+    Object.assign(r, { amount, bankRef: $("[name=bankRef]", box).value.trim(), payer: $("[name=payer]", box).value.trim(), allocs: allocs.map(({ sid, amount }) => ({ sid, amount })) });
+    recalcPaid(S); save(); closeDialog(); ui.rc.done = `Đã sửa phiếu thu ${r.no}${r.overpaid ? `; Thu thừa ${money(r.overpaid)} đ` : ""}${ids.length ? ` (${statusList(ids)})` : ""}.`; render();
+  },
+  "credit-open": () => {
+    const code = ui.rc.cust, credit = S.receipts.filter((r) => r.customer === code).reduce((t, r) => t + r.overpaid, 0);
+    const sts = openSts(code), sug = RF.suggestAllocation(credit, sts.map((st) => ({ id: st.id, statementNo: st.no, balance: String(st.total - st.paid), issuedAt: st.issuedAt })));
+    const lines = sts.map((st) => ({ sid: st.id, no: st.no, max: st.total - st.paid, v: Number(sug.allocations.find((a) => a.id === st.id)?.amount || 0) }));
+    openDialog("Dùng tiền Thu thừa cho bảng kê", `<div class="grid gap-3" id="f-cr" data-credit="${credit}"><p class="text-sm">Số dư Thu thừa hiện có: <b style="color:var(--accent)">${money(credit)} đ</b>. Tiền lấy từ phiếu thu cũ nhất trước và ghi thành phân bổ của các phiếu đó. Đã điền sẵn gợi ý (${esc(sug.label)}).</p>${allocTable(lines)}<div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy bỏ</button><button class="btn" data-a="credit-save">Phân bổ Thu thừa</button></div></div>`, true);
+  },
+  "credit-save": () => {
+    const box = $("#f-cr"), credit = Number(box.dataset.credit), allocs = readAllocTable(box), need = allocs.reduce((t, a) => t + a.amount, 0);
+    if (!need) return toast("Nhập số tiền dùng cho ít nhất một bảng kê.", "bad");
+    const bad = allocs.find((a) => a.amount > a.max); if (bad) return toast(`Phân bổ cho ${bad.no} vượt số còn nợ.`, "bad");
+    if (need > credit) return toast(`Số dư Thu thừa chỉ còn ${money(credit)} đ.`, "bad");
+    const pool = S.receipts.filter((r) => r.customer === ui.rc.cust && r.status !== "CANCELLED" && r.overpaid > 0).sort((a, b) => (a.receivedAt < b.receivedAt ? -1 : 1));
+    const used = new Set();
+    for (const a of allocs) {
+      let rest = a.amount;
+      for (const r of pool) {
+        if (rest <= 0) break;
+        const left = r.amount - r.allocs.reduce((t, x) => t + Number(x.amount), 0);
+        if (left <= 0) continue;
+        const take = Math.min(rest, left);
+        const ex = r.allocs.find((x) => x.sid === a.sid);
+        ex ? (ex.amount = Number(ex.amount) + take) : r.allocs.push({ sid: a.sid, amount: take });
+        rest -= take; used.add(r.no);
+      }
+    }
+    recalcPaid(S); save(); closeDialog();
+    ui.rc.done = `Đã dùng ${money(need)} đ tiền Thu thừa (từ ${[...used].join(", ")}) — ${statusList(allocs.map((a) => a.sid))}. Còn lại ${money(credit - need)} đ.`; render();
+  },
+  "al-full": (el) => { const tr = el.closest(".al"); $("input", tr).value = RF.formatThousands(tr.dataset.max); },
   "rc-full": (el) => { const s = S.statements.find((x) => x.id === Number(el.dataset.id)); ui.rc.manual = true; ui.rc.alloc[s.id] = RF.formatThousands(String(s.total - s.paid)); rcRefresh(); },
   "rc-apply": () => { rcApplySuggestion(); rcRefresh(); },
   "rc-proof-del": (el) => { ui.rc.proofs.splice(Number(el.dataset.i), 1); $("#rc-proofs").innerHTML = proofsHtml(); },
@@ -1003,17 +1218,39 @@ const A = {
     const c = cust(el.dataset.id);
     openDialog(`Sửa khách hàng ${c.code}`, `<div class="grid gap-3" id="f-cu" data-id="${c.code}"><label class="f"><span>Tên</span><input class="inp" name="name" value="${esc(c.name)}"></label>
     <label class="f"><span>Sale phụ trách</span><select class="inp" name="saleId"><option value="">— Chưa gán —</option>${S.users.filter((u) => u.role === "SALE").map((u) => `<option value="${u.id}" ${u.id === c.saleId ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
-    <label class="f"><span>Nhóm giá mặc định</span><select class="inp" name="group"><option value="">Bảng giá chung</option><option ${c.group === "NHOM_BUSINESS" ? "selected" : ""}>NHOM_BUSINESS</option></select></label>
-    <label class="f"><span>% điều chỉnh giá (áp khi dùng giá nhóm/chung)</span><input class="inp" name="adjust" value="${esc(c.adjust)}"></label>
+    <label class="f"><span>Nhóm giá</span><select class="inp" name="group"><option value="">Bảng giá chung</option>${S.groups.filter((g) => g.active).map((g) => `<option value="${g.code}" ${c.group === g.code ? "selected" : ""}>${esc(g.name)} (${g.code}) · ${Number(g.adjust) > 0 ? "+" : ""}${Number(g.adjust)}%</option>`).join("")}</select></label>
+    <label class="f"><span>% riêng của khách (áp thêm trên giá nhóm / giá chung)</span><input class="inp" name="adjust" value="${esc(c.adjust)}"></label>
+    <label class="f"><span>Link Google Sheet nhập đơn (SkyLane cấp cho khách)</span><input class="inp" name="sheet" value="${esc(c.sheet || "")}" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
     <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="cu-save">Lưu & tính lại giá</button></div></div>`);
   },
   "cu-save": () => {
     const box = $("#f-cu"), c = cust(box.dataset.id), v = (n) => $(`[name=${n}]`, box).value.trim();
     const adj = v("adjust").replace(",", ".");
     if (!/^-?\d+(\.\d+)?$/.test(adj) || Number(adj) <= -100) return toast("% điều chỉnh không hợp lệ.", "bad");
-    Object.assign(c, { name: v("name") || c.name, saleId: v("saleId") || null, group: v("group") || null, adjust: adj });
+    Object.assign(c, { name: v("name") || c.name, saleId: v("saleId") || null, group: v("group") || null, adjust: adj, sheet: v("sheet") });
     const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => o.customer === c.code && reprice(S, o, cat) && n++);
     save(); closeDialog(); render(); toast(`Đã lưu ${c.code}; tính lại giá ${n} đơn chưa khóa.`);
+  },
+  "gr-edit": (el) => {
+    const g = S.groups.find((x) => x.code === el.dataset.id);
+    openDialog(g ? `Sửa nhóm giá ${g.code}` : "Thêm nhóm giá", `<div class="grid gap-3" id="f-gr" data-id="${esc(g?.code || "")}">
+    <div class="grid gap-3 sm:grid-cols-2"><label class="f"><span>Mã nhóm *</span><input class="inp uppercase" name="code" value="${esc(g?.code || "")}" ${g ? "readonly" : ""} placeholder="VD: CA_NHAN"></label>
+    <label class="f"><span>Tên nhóm *</span><input class="inp" name="name" value="${esc(g?.name || "")}"></label>
+    <label class="f"><span>% so với giá chung</span><input class="inp" name="adjust" value="${esc(g?.adjust ?? "0")}"><span class="text-xs muted">10 = cao hơn giá chung 10%; -5 = thấp hơn 5%</span></label>
+    <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="active" ${g?.active ?? true ? "checked" : ""}> Đang hoạt động</label></div>
+    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="gr-save">Lưu & tính lại giá</button></div></div>`);
+  },
+  "gr-save": () => {
+    const box = $("#f-gr"), v = (n) => $(`[name=${n}]`, box).value.trim();
+    const code = (box.dataset.id || v("code")).toUpperCase(), adj = v("adjust").replace(",", ".");
+    if (!code || !v("name")) return toast("Nhập mã và tên nhóm.", "bad");
+    if (!/^-?\d+(\.\d+)?$/.test(adj) || Number(adj) <= -100) return toast("% không hợp lệ (phải > -100).", "bad");
+    let g = S.groups.find((x) => x.code === code);
+    if (!box.dataset.id && g) return toast(`Nhóm ${code} đã có.`, "bad");
+    if (!g) S.groups.push((g = { code, note: "" }));
+    Object.assign(g, { name: v("name"), adjust: adj, active: $("[name=active]", box).checked });
+    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => cust(o.customer)?.group === code && reprice(S, o, cat) && n++);
+    save(); closeDialog(); render(); toast(`Đã lưu nhóm ${code}; tính lại ${n} đơn chưa khóa giá.`);
   },
   "ro-edit": (el) => {
     const r = S.routes.find((x) => x.code === el.dataset.id);
@@ -1050,6 +1287,10 @@ document.addEventListener("change", (e) => {
   else if (c === "sel") { const id = Number(el.value); el.checked ? ui.orders.sel.add(id) : ui.orders.sel.delete(id); render(); }
   else if (c === "sel-page") { $$('[data-c="sel"]').forEach((x) => (el.checked ? ui.orders.sel.add(Number(x.value)) : ui.orders.sel.delete(Number(x.value)))); render(); }
   else if (c === "ver-route") { ui.verRoute = el.value; render(); }
+  else if (c === "dr-cust") { ui.drafts.cust = el.value; render(); }
+  else if (c === "dr-sel") { const id = Number(el.value); el.checked ? ui.drafts.sel.add(id) : ui.drafts.sel.delete(id); render(); }
+  else if (c === "dr-all") { $$('[data-c="dr-sel"]').forEach((x) => (el.checked ? ui.drafts.sel.add(Number(x.value)) : ui.drafts.sel.delete(Number(x.value)))); render(); }
+  else if (c === "imp-file") readImportFile(el.files[0]);
   else if (c === "ver-kind") { ui.verKind = el.value; render(); }
   else if (c === "stn-cust") { ui.stNew = { ...ui.stNew, cust: el.value, sel: new Set() }; render(); }
   else if (c === "stn-from" || c === "stn-to") { ui.stNew[c.slice(4)] = el.value; render(); }
@@ -1062,6 +1303,9 @@ document.addEventListener("input", (e) => {
   const el = e.target, c = el.dataset.c;
   const row = el.closest('[data-c="bulk-row"]');
   if (row && el.type !== "checkbox") $("input[type=checkbox]", row).checked = true;
+  if (c === "imp-text") ui.impRows = null;
+  if (c === "fmt") el.value = RF.formatThousands(el.value);
+  if (c === "dr-q") { ui.drafts.q = el.value; const pos = el.selectionStart; render(); const n = $('[data-c="dr-q"]'); n.focus(); n.setSelectionRange(pos, pos); }
   if (c === "o-q") { ui.orders.q = el.value; ui.orders.page = 1; const pos = el.selectionStart; render(); const n = $('[data-c="o-q"]'); n.focus(); n.setSelectionRange(pos, pos); }
   if (c === "rc-amount") {
     const f = RF.formatThousands(el.value); el.value = f; ui.rc.amount = f; ui.rc.done = null;
