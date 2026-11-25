@@ -1,0 +1,1080 @@
+{
+// =============================================================================
+// Module thật của dự án (biên dịch từ lib/*.ts)
+// =============================================================================
+const E = __M.engine, IX = __M.importExcel, V = __M.versioning, IP = __M.importParse, SF = __M.statementFmt, RF = __M.receiptFmt, P = __M.permissions;
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const money = (v) => Math.round(Number(v) || 0).toLocaleString("vi-VN");
+const kg = (v) => (Number(v) ? Number(v).toLocaleString("vi-VN", { maximumFractionDigits: 3 }) : "–");
+const today = () => E.pricingDate(null, new Date());
+const STATUSES = ["Phát sinh", "Đã nhận kho", "Đã xuất hàng", "Đã giao hàng", "Hoàn"];
+const STATUS_TONE = { "Phát sinh": "muted", "Đã nhận kho": "info", "Đã xuất hàng": "warn", "Đã giao hàng": "ok", Hoàn: "bad" };
+const DEBT_TONE = { "Chưa thanh toán": "muted", "xuất bảng kê": "info", "Thanh toán 1 phần": "warn", "Đã thanh toán": "ok" };
+const badge = (t, tone = "muted") => `<span class="b b-${tone}">${esc(t)}</span>`;
+const SVC_ROUND = { EPK: "Tổng bill ↑0,05 kg", CPN: "Từng kiện & tổng ↑0,5 kg (≤20) / 1 kg (>20)", CT: "Tổng bill ↑1 kg" };
+
+// =============================================================================
+// Dữ liệu mẫu (danh mục thật từ Google Sheet; giá & đơn là số liệu mẫu)
+// =============================================================================
+function rng(seed) {
+  return () => {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const steps = (a, b, s) => { const o = []; for (let w = a; w <= b + 1e-9; w = Math.round((w + s) * 100) / 100) o.push(w); return o; };
+const EPK_W = [...steps(0.1, 2, 0.1), ...steps(2.5, 10, 0.5), ...steps(11, 20, 1)];
+const CPN_W = steps(0.5, 20, 0.5);
+const r1000 = (x) => String(Math.round(x / 1000) * 1000);
+
+const PRICE_DEFS = {
+  VNFZZXR: { mode: "MA_TRAN", w: EPK_W, zones: [["US", 90000, 260000], ["GB", 70000, 240000], ["DE,FR,IT,ES,NL", 95000, 250000], ["AU,CA", 100000, 270000]] },
+  "VN-YTYCPREC": { mode: "MA_TRAN", w: EPK_W, zones: [["US", 85000, 255000]] },
+  VNTHZXR: { mode: "MA_TRAN", w: [...EPK_W, ...steps(21, 30, 1)], zones: [["US", 80000, 240000]] },
+  VNBKZXR: { mode: "MA_TRAN", w: EPK_W, zones: [["US", 88000, 250000]] },
+  "UPS HAN S5500": { mode: "MA_TRAN+THEO_KG", w: CPN_W, zones: [["US", 220000, 180000], ["CA", 240000, 190000], ["GB", 230000, 185000]], kgs: [[20, 44, 175000], [44, 99, 170000], [99, 299, 165000], [299, null, 160000]] },
+  "UPS SAVER SS": { mode: "MA_TRAN+THEO_KG", w: CPN_W, zones: [["US", 205000, 170000], ["CA", 225000, 180000], ["GB", 215000, 175000]], kgs: [[20, 44, 165000], [44, 99, 160000], [99, 299, 155000], [299, null, 150000]] },
+  "CT UK-NK": { mode: "THEO_KG", w: [], zones: [["GB", 0, 0]], kgs: [[0, 44, 120000], [44, 99, 110000], [99, null, 100000]] },
+  "CT EU-A": { mode: "THEO_KG", w: [], zones: [["DE,FR,IT,ES,NL", 0, 0]], kgs: [[0, 44, 135000], [44, 99, 125000], [99, null, 115000]] },
+};
+
+function buildVersion(id, route, kind, factor, from, to = null, extra = {}) {
+  const d = PRICE_DEFS[route];
+  return {
+    id, routeCode: route, kind, customerCode: extra.customerCode ?? null, priceGroupCode: extra.priceGroupCode ?? null,
+    mode: d.mode, effectiveFrom: from, effectiveTo: to, status: "ACTIVE", currency: "VND",
+    name: `${route} · ${kind === "COST" ? "Giá gốc" : "Giá bán"} · ${extra.customerCode ? "KH " + extra.customerCode : extra.priceGroupCode ? "Nhóm " + extra.priceGroupCode : "Chung"}`,
+    note: extra.note ?? "Dữ liệu mẫu",
+    zones: d.zones.map(([countries, base, perKg], i) => ({
+      zoneCode: `Z${String(i + 1).padStart(2, "0")}`,
+      countries: countries.split(","),
+      matrix: d.w.map((w) => ({ weightMax: String(w), price: r1000((base + perKg * w) * factor) })),
+      perKg: (d.kgs ?? []).map(([a, b, u]) => ({ weightMin: String(a), weightMax: b === null ? null : String(b), unitPrice: r1000((u + i * 5000) * factor) })),
+    })),
+  };
+}
+
+function seed() {
+  const S = {
+    me: "u-admin", seq: 1, counters: {},
+    users: [
+      { id: "u-admin", name: "Quản trị Demo", role: "ADMIN" },
+      { id: "u-kt", name: "Kế toán Lan", role: "KE_TOAN" },
+      { id: "u-kho", name: "Kho Minh", role: "KHO" },
+      { id: "u-huy", name: "Huy", role: "SALE" },
+      { id: "u-khanh", name: "Khánh", role: "SALE" },
+    ],
+    customers: [
+      { code: "SKL116", name: "Chị Thanh", group: "NHOM_BUSINESS", adjust: "0", saleId: "u-huy", currency: "VND" },
+      { code: "SKL170", name: "Minh Nhật", group: "NHOM_BUSINESS", adjust: "-3", saleId: "u-khanh", currency: "VND" },
+      { code: "SKL126", name: "Chị Amb", group: null, adjust: "5", saleId: "u-khanh", currency: "VND" },
+    ],
+    routes: [
+      ["VNFZZXR", "YUN", "EPK", 15000], ["VN-YTYCPREC", "YUN", "EPK", 5000], ["VNTHZXR", "YUN", "EPK", 6000], ["VNBKZXR", "YUN", "EPK", 5000],
+      ["UPS HAN S5500", "HYE", "CPN", 5500], ["UPS HAN D", "HYE", "CPN", 6000], ["UPS SAVER SS", "LY TUONG", "CPN", 5500],
+      ["CT UK-NK", "KANGO", "CT", 150000], ["CT EU-A", "ALPHA", "CT", 6000], ["CT UK-CK", "KANGO", "CT", 150000],
+    ].map(([code, supplier, service, dim]) => ({ code, name: code, supplier, service, mode: code.startsWith("CT UK") ? "ACTUAL_ONLY" : "MAX_ACTUAL_VOL", dim: String(dim) })),
+    versions: [], orders: [], statements: [], receipts: [],
+  };
+  let vid = 1;
+  S.versions.push(buildVersion(vid++, "VNFZZXR", "COST", 0.97, "2026-10-01", "2026-10-31", { note: "Bảng giá YUN tháng 10 (đã kết thúc)" }));
+  for (const r of Object.keys(PRICE_DEFS)) {
+    S.versions.push(buildVersion(vid++, r, "COST", 1, r === "VNFZZXR" ? "2026-11-01" : "2026-10-01"));
+    S.versions.push(buildVersion(vid++, r, "SELL", 1.3, "2026-10-01"));
+  }
+  S.versions.push(buildVersion(vid++, "VNFZZXR", "SELL", 1.22, "2026-10-01", null, { priceGroupCode: "NHOM_BUSINESS" }));
+  S.versions.push(buildVersion(vid++, "UPS HAN S5500", "SELL", 1.22, "2026-10-01", null, { priceGroupCode: "NHOM_BUSINESS" }));
+  S.versions.push(buildVersion(vid++, "VNFZZXR", "SELL", 1.15, "2026-10-01", null, { customerCode: "SKL116", note: "Giá riêng SKL116" }));
+
+  const rnd = rng(116);
+  const plan = [["VNFZZXR", ["US", "GB", "DE", "AU"]], ["VN-YTYCPREC", ["US"]], ["VNTHZXR", ["US"]], ["UPS HAN S5500", ["US", "CA", "GB"]], ["CT UK-NK", ["GB"]], ["UPS HAN D", ["US"]]];
+  const names = ["David Lee", "Brandon Rogers", "Victor Hugo", "Emma Stone", "Liam Smith", "Olivia Brown", "Noah Wilson", "Ava Taylor"];
+  for (let i = 0; i < 38; i++) {
+    const day = 1 + Math.floor((i * 24) / 38);
+    const cust = ["SKL116", "SKL170", "SKL126"][i % 3];
+    const [route, dests] = plan[i % 13 === 12 ? 5 : i % 5];
+    const svc = S.routes.find((r) => r.code === route).service;
+    const n = svc === "EPK" ? 1 + (rnd() < 0.2) : 1 + Math.floor(rnd() * 3);
+    const pk = () => {
+      const w = svc === "EPK" ? 0.15 + rnd() * 2.5 : svc === "CPN" ? 1 + rnd() * 14 : 15 + rnd() * 30;
+      return { l: String(Math.round(15 + rnd() * 35)), w: String(Math.round(10 + rnd() * 30)), h: String(Math.round(5 + rnd() * 25)), kg: w.toFixed(3) };
+    };
+    const status = day <= 10 ? "Đã giao hàng" : day <= 18 ? "Đã xuất hàng" : day <= 22 ? "Đã nhận kho" : "Phát sinh";
+    const o = newOrder(S, {
+      customer: cust,
+      bill: cust === "SKL116" ? `#AP${1376 + i}` : cust === "SKL170" ? `MN${2600 + i}` : `AMB${800 + i}`,
+      tracking: status === "Phát sinh" ? "" : `1Z${String(Math.floor(rnd() * 1e9)).padStart(9, "0")}`,
+      route, assigned: route === "UPS HAN S5500" && i % 2 ? "UPS SAVER SS" : route,
+      iso2: dests[Math.floor(rnd() * dests.length)],
+      status: i === 7 ? "Hoàn" : status,
+      createdAt: `2026-11-${String(day).padStart(2, "0")}T${String(9 + (i % 8)).padStart(2, "0")}:15:00+07:00`,
+      packages: status === "Phát sinh" && i % 2 ? [] : Array.from({ length: n }, pk),
+      receiver: names[i % names.length],
+    });
+    S.orders.push(o);
+  }
+  const cat = catalogOf(S);
+  S.orders.forEach((o) => reprice(S, o, cat));
+  // Bảng kê + thanh toán mẫu
+  const pick = (c, upto) => S.orders.filter((o) => o.customer === c && pd(o) <= upto && Number(o.sell) > 0).map((o) => o.id);
+  createStatement(S, "SKL116", pick("SKL116", "2026-11-10"), "2026-11-01", "2026-11-10", "2026-11-12");
+  const b = createStatement(S, "SKL170", pick("SKL170", "2026-11-15"), "2026-11-01", "2026-11-15", "2026-11-16");
+  saveReceipt(S, { customer: "SKL170", amount: String(Math.round((b.total * 0.6) / 1000) * 1000), allocs: [{ sid: b.id, amount: String(Math.round((b.total * 0.6) / 1000) * 1000) }], bankRef: "FT26320AB1", day: "2026-11-20" });
+  return S;
+}
+
+// =============================================================================
+// Nghiệp vụ (dùng engine thật)
+// =============================================================================
+const catalogOf = (S) => ({
+  routes: S.routes.map((r) => ({ routeCode: r.code, serviceType: r.service, weightCalcMode: r.mode, dimDivisor: r.dim })),
+  versions: S.versions,
+});
+const pd = (o) => E.pricingDate(o.shippedAt, o.createdAt);
+const custOf = (S, c) => S.customers.find((x) => x.code === c);
+
+function newOrder(S, d) {
+  return {
+    id: S.seq++, customer: d.customer, bill: d.bill.trim().toUpperCase(), tracking: d.tracking || "", route: d.route, assigned: d.assigned || d.route,
+    iso2: d.iso2.toUpperCase(), status: d.status || "Phát sinh", debt: "Chưa thanh toán", createdAt: d.createdAt || new Date().toISOString(),
+    shippedAt: d.shippedAt || null, packages: d.packages || [], overrides: [], actual: "0", vol: "0", billed: "0", shipped: "0", sell: "0", cost: "0",
+    locked: false, receiver: d.receiver || "", note: d.note || "", source: d.source || "MANUAL", warn: null, sellV: null, costV: null,
+  };
+}
+
+/** Tự động tính lại giá: đơn chưa khóa → engine tính lại cân, giá bán, giá gốc */
+function reprice(S, o, cat = catalogOf(S)) {
+  if (o.locked) return false;
+  const c = custOf(S, o.customer);
+  const input = {
+    customerCode: o.customer, priceGroupCode: c?.group, priceAdjustPct: c?.adjust, routeCode: o.route, assignedRouteCode: o.assigned,
+    destinationIso2: o.iso2, shippedAt: o.shippedAt, createdAt: o.createdAt,
+    packages: o.packages.map((p) => ({ lengthCm: p.l, widthCm: p.w, heightCm: p.h, actualWeight: p.kg })),
+    manualOverrides: o.overrides,
+    current: { actual_weight: o.actual, volumetric_weight: o.vol, billed_weight: o.billed, shipped_weight: o.shipped, sell_amount: o.sell, cost_amount: o.cost },
+  };
+  let r, keep = false;
+  o.warn = null;
+  try {
+    r = E.calcOrderPricing(input, cat);
+  } catch (e) {
+    if (!(e instanceof E.PricingError)) throw e;
+    o.warn = e.message;
+    try {
+      r = E.calcOrderPricing({ ...input, manualOverrides: [...o.overrides, "sell_amount", "cost_amount"] }, cat);
+      keep = true;
+    } catch {
+      return false;
+    }
+  }
+  Object.assign(o, { actual: r.billed.totalActual, vol: r.billed.totalVolumetric, billed: r.billed.weight, shipped: r.shipped.weight, sell: r.billed.amount, cost: r.shipped.amount });
+  if (!keep) {
+    if (!r.billed.amountOverridden) { o.sellV = r.billed.versionId; o.sellScope = r.billed.scope; }
+    if (!r.shipped.amountOverridden) o.costV = r.shipped.versionId;
+  }
+  return true;
+}
+
+function nextNo(S, prefix, day, fmt) {
+  const k = `${prefix}|${day}`;
+  S.counters[k] = (S.counters[k] || 0) + 1;
+  return fmt(day, S.counters[k]);
+}
+
+function createStatement(S, customer, ids, from, to, day = today()) {
+  const c = custOf(S, customer);
+  const os = S.orders.filter((o) => ids.includes(o.id)).sort((a, b) => (pd(a) < pd(b) ? -1 : 1));
+  const bad = os.find((o) => o.debt !== "Chưa thanh toán" || o.customer !== customer);
+  if (bad) throw new Error(`Đơn ${bad.bill} đã lên bảng kê hoặc không thuộc ${customer}.`);
+  const no = nextNo(S, SF.STATEMENT_PREFIX, day, SF.formatStatementNo);
+  const st = {
+    id: S.seq++, no, name: SF.statementName(c.name, c.code, no), customer, issuedAt: `${day}T10:00:00+07:00`, from, to, status: "ACTIVE", debt: "xuất bảng kê", paid: 0,
+    items: os.map((o, i) => ({ line: i + 1, orderId: o.id, date: pd(o), bill: o.bill, tracking: o.tracking, iso2: o.iso2, receiver: o.receiver, pkgs: o.packages.length, billed: o.billed, route: o.route, amount: Number(o.sell), note: o.note })),
+  };
+  st.total = st.items.reduce((t, i) => t + i.amount, 0);
+  os.forEach((o) => { o.debt = "xuất bảng kê"; o.locked = true; });
+  S.statements.push(st);
+  return st;
+}
+
+const debtOf = (total, paid) => (paid <= 0 ? "xuất bảng kê" : paid >= total ? "Đã thanh toán" : "Thanh toán 1 phần");
+
+function saveReceipt(S, { customer, amount, allocs, bankRef = "", payer = "", note = "", account = RF.DEFAULT_RECEIVED_ACCOUNT, proofs = [], day = today() }) {
+  const amt = Number(amount);
+  const total = allocs.reduce((t, a) => t + Number(a.amount), 0);
+  if (!(amt > 0)) throw new Error("Số tiền nhận phải lớn hơn 0.");
+  if (total > amt) throw new Error("Tổng phân bổ vượt quá số tiền nhận.");
+  for (const a of allocs) {
+    const st = S.statements.find((s) => s.id === a.sid);
+    if (!st || st.status !== "ACTIVE" || st.customer !== customer) throw new Error("Bảng kê không hợp lệ.");
+    if (Number(a.amount) > st.total - st.paid) throw new Error(`Phân bổ cho ${st.no} vượt số còn nợ.`);
+  }
+  const no = nextNo(S, RF.RECEIPT_PREFIX, day, RF.formatReceiptNo);
+  for (const a of allocs) {
+    const st = S.statements.find((s) => s.id === a.sid);
+    st.paid += Number(a.amount);
+    st.debt = debtOf(st.total, st.paid);
+    st.items.forEach((it) => { const o = S.orders.find((x) => x.id === it.orderId); if (o) o.debt = st.debt; });
+  }
+  const r = { id: S.seq++, no, customer, amount: amt, allocated: total, overpaid: amt - total, allocs, bankRef, payer, note, account, proofs, receivedAt: `${day}T${new Date().toTimeString().slice(0, 5)}:00+07:00` };
+  S.receipts.push(r);
+  return r;
+}
+
+// =============================================================================
+// Trạng thái, lưu trữ, quyền
+// =============================================================================
+const KEY = "skylane-demo-v1";
+let S = null;
+try { S = JSON.parse(localStorage.getItem(KEY) || "null"); } catch { S = null; }
+if (!S || !S.orders) S = seed();
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ ...S, receipts: S.receipts.map((r) => ({ ...r, proofs: [] })) })); } catch {} };
+save();
+
+const me = () => S.users.find((u) => u.id === S.me);
+const can = (p) => P.can(me().role, p);
+const cust = (c) => custOf(S, c);
+const inScope = (code) => me().role !== "SALE" || cust(code)?.saleId === me().id;
+const scopedCustomers = () => S.customers.filter((c) => inScope(c.code));
+
+const VIEWS = {
+  dashboard: { label: "Tổng quan", perm: "dashboard.view", group: "Vận hành" },
+  "don-hang": { label: "Vận đơn", perm: "orders.view", group: "Vận hành" },
+  "bao-gia": { label: "Tra cứu giá gốc", perm: "quote.view", group: "Vận hành" },
+  "bang-ke": { label: "Bảng kê", perm: "statements.view", group: "Tài chính" },
+  "doi-soat": { label: "Đối soát thu tiền", perm: "receipts.view", group: "Tài chính" },
+  "khach-hang": { label: "Khách hàng", perm: "catalog.view", group: "Danh mục" },
+  tuyen: { label: "Tuyến vận chuyển", perm: "catalog.view", group: "Danh mục" },
+  "bang-gia": { label: "Kho bảng giá", perm: "pricing.view", group: "Danh mục" },
+};
+const home = () => P.homeFor(me().role).slice(1);
+const ui = {
+  dash: { from: "2026-11-01", to: today() < "2026-11-01" ? "2026-11-30" : today(), cust: "", sale: "", table: false },
+  orders: { q: "", status: "", page: 1, sel: new Set() },
+  quote: { to: "US", kg: "1,5", vol: "DIM", l: "30", w: "20", h: "15", cbm: "", date: today(), ran: true },
+  ver: null, verKind: "", verRoute: "", st: null, stNew: null, rc: null,
+};
+
+function toast(msg, tone = "ok") {
+  const el = $("#toast");
+  el.innerHTML = `<div class="card fade p-3 shadow-lg" role="status" style="border-left:4px solid ${tone === "bad" ? "#dc2626" : tone === "warn" ? "#d97706" : "#059669"}">${esc(msg)}</div>`;
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => (el.innerHTML = ""), 5000);
+}
+const dlg = $("#dlg");
+function openDialog(title, body, wide = false) {
+  dlg.style.width = wide ? "min(1100px,calc(100% - 24px))" : "min(720px,calc(100% - 24px))";
+  dlg.innerHTML = `<div class="flex items-start justify-between gap-4 border-b line px-5 py-3"><h2 class="text-base font-semibold">${esc(title)}</h2><button class="btn g sm" data-a="close" aria-label="Đóng">✕</button></div><div class="overflow-auto p-5" style="max-height:calc(90vh - 60px)">${body}</div>`;
+  if (!dlg.open) dlg.showModal();
+}
+const closeDialog = () => dlg.open && dlg.close();
+
+// =============================================================================
+// Khung trang
+// =============================================================================
+function shell(content) {
+  const u = me();
+  const view = current();
+  const groups = {};
+  for (const [k, v] of Object.entries(VIEWS)) if (can(v.perm)) (groups[v.group] ||= []).push([k, v]);
+  const nav = Object.entries(groups)
+    .map(([g, items]) => `<p class="mt-4 mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider muted">${g}</p>${items.map(([k, v]) => `<a href="#${k}" class="${k === view ? "on" : ""}">${v.label}</a>`).join("")}`)
+    .join("");
+  const roleSel = `<select class="inp" data-c="role" aria-label="Đăng nhập với vai trò">${S.users.map((x) => `<option value="${x.id}" ${x.id === u.id ? "selected" : ""}>${esc(x.name)} — ${P.ROLE_LABEL[x.role]}</option>`).join("")}</select>`;
+  return `<div class="flex min-h-screen">
+  <aside class="side sticky top-0 h-screen w-60 shrink-0 overflow-y-auto border-r line p-3" style="background:var(--card)">
+    <a href="#${home()}" class="mb-2 flex items-center gap-2 px-1"><img src="${LOGO}" alt="SkyLane Logistics" width="38" height="36"><span class="leading-tight"><b class="block text-sm tracking-wide" style="color:var(--brand)">SKYLANE</b><span class="text-[11px] tracking-[.2em] muted">LOGISTICS</span></span></a>
+    <nav class="nav">${nav}</nav>
+    <div class="mt-6 border-t line pt-3"><p class="mb-1 text-xs muted">Đăng nhập thử với vai trò</p>${roleSel}<p class="mt-2 text-xs muted">${esc(roleHint(u.role))}</p></div>
+  </aside>
+  <main class="flex-1 p-4 md:p-6" style="max-width:1440px">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs" style="background:var(--soft)">
+      <span><b>Bản chạy thử</b> — logic thật của dự án (engine giá, import, phiên bản, bảng kê, đối soát, phân quyền) trên dữ liệu mẫu, chỉ lưu trong trình duyệt của bạn.</span>
+      <span class="flex items-center gap-2"><span class="md:hidden">${roleSel}</span><select class="inp md:hidden" style="width:auto" data-c="nav">${Object.entries(VIEWS).filter(([, v]) => can(v.perm)).map(([k, v]) => `<option value="${k}" ${k === view ? "selected" : ""}>${v.label}</option>`).join("")}</select><button class="btn o sm" data-a="reset">Đặt lại dữ liệu mẫu</button></span>
+    </div>
+    <div class="fade">${content}</div>
+  </main></div>`;
+}
+const roleHint = (r) =>
+  ({ ADMIN: "Toàn quyền, gồm mở khóa & sửa đơn đã khóa giá.", KE_TOAN: "Bảng kê, đối soát, công nợ; sửa/mở khóa đơn khóa giá.", KHO: "Sửa kích thước, cân, trạng thái, tuyến chỉ định. Không thấy giá.", SALE: "Chỉ xem đơn, báo giá, công nợ khách mình phụ trách." })[r];
+const head = (title, desc, actions = "") =>
+  `<div class="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h1 class="text-xl font-semibold">${esc(title)}</h1>${desc ? `<p class="text-sm muted">${esc(desc)}</p>` : ""}</div><div class="flex flex-wrap gap-2">${actions}</div></div>`;
+
+function current() {
+  const h = location.hash.slice(1);
+  return VIEWS[h] && can(VIEWS[h].perm) ? h : home();
+}
+
+let chartRO = null;
+function render() {
+  const v = current();
+  if (chartRO) { chartRO.disconnect(); chartRO = null; }
+  const fn = { dashboard: vDashboard, "don-hang": vOrders, "bao-gia": vQuote, "bang-ke": vStatements, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
+  $("#app").innerHTML = shell(fn());
+  if (v === "dashboard") drawChart();
+}
+
+// =============================================================================
+// TỔNG QUAN
+// =============================================================================
+function dashData() {
+  const f = ui.dash, u = me();
+  const sale = u.role === "SALE" ? u.id : f.sale;
+  const party = (code) => (!f.cust || code === f.cust) && (!sale || cust(code)?.saleId === sale);
+  const os = S.orders.filter((o) => party(o.customer) && pd(o) >= f.from && pd(o) <= f.to);
+  const sum = (arr, k) => arr.reduce((t, o) => t + Number(o[k]), 0);
+  const billed = S.statements.filter((s) => s.status === "ACTIVE" && party(s.customer)).reduce((t, s) => t + (s.total - s.paid), 0);
+  const unbilled = S.orders.filter((o) => o.debt === "Chưa thanh toán" && party(o.customer)).reduce((t, o) => t + Number(o.sell), 0);
+  const points = [];
+  for (let d = new Date(f.from + "T00:00:00Z"); d <= new Date(f.to + "T00:00:00Z") && points.length < 400; d.setUTCDate(d.getUTCDate() + 1)) {
+    const k = d.toISOString().slice(0, 10);
+    const x = os.filter((o) => pd(o) === k);
+    points.push({ k, revenue: sum(x, "sell"), cost: sum(x, "cost"), profit: sum(x, "sell") - sum(x, "cost") });
+  }
+  const group = (keyFn, labelFn) => {
+    const m = new Map();
+    for (const o of os) { const k = keyFn(o); const r = m.get(k) || { label: labelFn(o), n: 0, revenue: 0, cost: 0 }; r.n++; r.revenue += Number(o.sell); r.cost += Number(o.cost); m.set(k, r); }
+    return [...m.values()].sort((a, b) => b.revenue - a.revenue);
+  };
+  return {
+    os, rev: sum(os, "sell"), cost: sum(os, "cost"), weight: sum(os, "billed"), billed, unbilled, points,
+    byCust: group((o) => o.customer, (o) => `${o.customer} — ${cust(o.customer)?.name}`),
+    bySale: group((o) => cust(o.customer)?.saleId || "-", (o) => S.users.find((x) => x.id === cust(o.customer)?.saleId)?.name || "Chưa gán"),
+  };
+}
+function vDashboard() {
+  const f = ui.dash, u = me(), d = dashData();
+  const profit = d.rev - d.cost;
+  const kpi = (label, v, sub, color, strong) => `<div class="card p-4" ${strong ? 'style="border-color:var(--accent)"' : ""}><p class="flex items-center gap-1.5 text-xs muted">${color ? `<span class="inline-block size-2 rounded-full" style="background:${color}"></span>` : ""}${label}</p><p class="mt-1 text-2xl font-semibold num" style="text-align:left${strong ? ";color:var(--brand)" : ""}">${money(v)} <span class="text-sm font-normal muted">đ</span></p>${sub ? `<p class="mt-1 text-xs muted">${sub}</p>` : ""}</div>`;
+  const tbl = (title, rows) => `<div><h3 class="mb-2 text-sm font-semibold">${title}</h3><div class="card scroll"><table class="t"><thead><tr><th>Tên</th><th class="num">Đơn</th><th class="num">Doanh thu</th><th class="num">Giá vốn</th><th class="num">Lợi nhuận</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.label)}</td><td class="num">${r.n}</td><td class="num">${money(r.revenue)}</td><td class="num muted">${money(r.cost)}</td><td class="num font-medium">${money(r.revenue - r.cost)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Không có dữ liệu.</td></tr>`}</tbody></table></div></div>`;
+  return head("Tổng quan", u.role === "SALE" ? "Số liệu các khách hàng bạn phụ trách." : "Doanh thu, giá vốn, lợi nhuận theo Ngày gửi hàng; công nợ phải thu hiện tại.") + `
+  <div class="card mb-4 flex flex-wrap items-end gap-3 p-3">
+    <label class="f"><span>Từ ngày</span><input class="inp" type="date" value="${f.from}" data-c="dash.from"></label>
+    <label class="f"><span>Đến ngày</span><input class="inp" type="date" value="${f.to}" data-c="dash.to"></label>
+    <label class="f"><span>Khách hàng</span><select class="inp" data-c="dash.cust"><option value="">Tất cả</option>${scopedCustomers().map((c) => `<option value="${c.code}" ${c.code === f.cust ? "selected" : ""}>${c.code} — ${esc(c.name)}</option>`).join("")}</select></label>
+    ${u.role === "SALE" ? "" : `<label class="f"><span>Nhân viên Sale</span><select class="inp" data-c="dash.sale"><option value="">Tất cả</option>${S.users.filter((x) => x.role === "SALE").map((x) => `<option value="${x.id}" ${x.id === f.sale ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>`}
+  </div>
+  <div class="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    ${kpi("Doanh thu", d.rev, `${d.os.length} đơn · ${kg(d.weight)} kg tính phí`, "var(--s1)")}
+    ${kpi("Giá vốn", d.cost, "", "var(--s2)")}
+    ${kpi("Lợi nhuận", profit, `Biên ${(d.rev ? (profit / d.rev) * 100 : 0).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}%`, "var(--s3)")}
+    ${kpi("Tổng công nợ phải thu", d.billed + d.unbilled, `Đã lên bảng kê ${money(d.billed)} · Chưa lên bảng kê ${money(d.unbilled)}`, "", true)}
+  </div>
+  <div class="card mb-4 p-4">
+    <div class="mb-2 flex flex-wrap items-center justify-between gap-2"><span class="text-sm font-medium">Doanh thu, giá vốn & lợi nhuận theo ngày (VND)</span>
+      <span class="flex items-center gap-3 text-xs muted">${[["Doanh thu", "--s1"], ["Giá vốn", "--s2"], ["Lợi nhuận", "--s3"]].map(([n, c]) => `<span class="flex items-center gap-1.5"><span class="inline-block h-0.5 w-4" style="background:var(${c})"></span>${n}</span>`).join("")}<button class="btn g sm" data-a="dash-table">${f.table ? "Xem biểu đồ" : "Xem bảng"}</button></span></div>
+    ${f.table
+      ? `<div class="scroll" style="max-height:300px"><table class="t"><thead><tr><th>Ngày</th><th class="num">Doanh thu</th><th class="num">Giá vốn</th><th class="num">Lợi nhuận</th></tr></thead><tbody>${d.points.map((p) => `<tr><td>${V.viDate(p.k)}</td><td class="num">${money(p.revenue)}</td><td class="num">${money(p.cost)}</td><td class="num">${money(p.profit)}</td></tr>`).join("")}</tbody></table></div>`
+      : `<div class="fig" id="chart"><svg></svg><div id="tip" class="card pointer-events-none absolute hidden p-2 text-xs shadow-md" style="min-width:170px"></div></div>`}
+  </div>
+  <div class="grid gap-4 xl:grid-cols-2">${tbl("Theo khách hàng", d.byCust)}${u.role === "SALE" ? "" : tbl("Theo nhân viên Sale", d.bySale)}</div>`;
+}
+function drawChart() {
+  const box = $("#chart");
+  if (!box) return;
+  const pts = dashData().points;
+  const svg = $("svg", box), tip = $("#tip", box);
+  const series = [["revenue", "Doanh thu", "var(--s1)"], ["cost", "Giá vốn", "var(--s2)"], ["profit", "Lợi nhuận", "var(--s3)"]];
+  const draw = () => {
+    const W = box.clientWidth, H = box.clientHeight, pl = W < 520 ? 44 : 64, pr = W < 520 ? 12 : 80, pt = 10, pb = 26;
+    const vals = pts.flatMap((p) => series.map(([k]) => p[k]));
+    let lo = Math.min(0, ...vals), hi = Math.max(1, ...vals);
+    const raw = (hi - lo) / 4, mag = 10 ** Math.floor(Math.log10(raw || 1)), step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || raw;
+    lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+    const x = (i) => pl + (pts.length < 2 ? (W - pl - pr) / 2 : (i / (pts.length - 1)) * (W - pl - pr));
+    const y = (v) => pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo || 1));
+    const c = (v) => (Math.abs(v) >= 1e6 ? (v / 1e6).toLocaleString("vi-VN", { maximumFractionDigits: 1 }) + " tr" : v.toLocaleString("vi-VN"));
+    let g = "";
+    for (let v = lo; v <= hi + step / 2; v += step) g += `<line x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${pl - 6}" y="${y(v)}" dy=".32em" text-anchor="end" font-size="11" fill="var(--muted)">${c(v)}</text>`;
+    const every = Math.max(1, Math.ceil(pts.length / (W < 520 ? 5 : 10)));
+    pts.forEach((p, i) => { if (i % every === 0 || i === pts.length - 1) g += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${p.k.slice(8, 10)}/${p.k.slice(5, 7)}</text>`; });
+    for (const [k, , col] of series) g += `<polyline fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" points="${pts.map((p, i) => `${x(i)},${y(p[k])}`).join(" ")}"/>`;
+    if (W >= 520 && pts.length) {
+      const last = pts.length - 1, ls = series.map(([k, n]) => ({ n, y: y(pts[last][k]) })).sort((a, b) => a.y - b.y);
+      for (let i = 1; i < ls.length; i++) if (ls[i].y - ls[i - 1].y < 14) ls[i].y = ls[i - 1].y + 14;
+      ls.forEach((l) => (g += `<text x="${W - pr + 8}" y="${l.y}" dy=".32em" font-size="11" font-weight="600" fill="var(--ink)">${l.n}</text>`));
+    }
+    g += `<g id="hov"></g>`;
+    svg.innerHTML = g;
+    box.onmousemove = (e) => {
+      const r = box.getBoundingClientRect();
+      const i = Math.max(0, Math.min(pts.length - 1, Math.round(((e.clientX - r.left - pl) / (W - pl - pr)) * (pts.length - 1))));
+      const p = pts[i];
+      $("#hov", svg).innerHTML = `<line x1="${x(i)}" x2="${x(i)}" y1="${pt}" y2="${H - pb}" stroke="var(--muted)" stroke-dasharray="3 3"/>` + series.map(([k, , col]) => `<circle cx="${x(i)}" cy="${y(p[k])}" r="4.5" fill="${col}" stroke="var(--card)" stroke-width="2"/>`).join("");
+      tip.classList.remove("hidden");
+      tip.innerHTML = `<b>${V.viDate(p.k)}</b>` + series.map(([k, n, col]) => `<div class="flex justify-between gap-4"><span><span class="inline-block size-2 rounded-full" style="background:${col}"></span> ${n}</span><b class="num">${money(p[k])}</b></div>`).join("");
+      tip.style.left = (x(i) > W / 2 ? x(i) - tip.offsetWidth - 12 : x(i) + 12) + "px";
+      tip.style.top = "8px";
+    };
+    box.onmouseleave = () => { tip.classList.add("hidden"); const h = $("#hov", svg); if (h) h.innerHTML = ""; };
+  };
+  chartRO = new ResizeObserver(draw);
+  chartRO.observe(box);
+}
+
+// =============================================================================
+// VẬN ĐƠN
+// =============================================================================
+const PAGE = 15;
+function visibleOrders() {
+  const f = ui.orders, q = f.q.trim().toLowerCase();
+  return S.orders
+    .filter((o) => inScope(o.customer))
+    .filter((o) => !q || [o.bill, o.tracking, o.customer, cust(o.customer)?.name].some((x) => String(x || "").toLowerCase().includes(q)))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+function vOrders() {
+  const f = ui.orders, all = visibleOrders();
+  const rows = all.filter((o) => !f.status || o.status === f.status);
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+  f.page = Math.min(f.page, pages);
+  const page = rows.slice((f.page - 1) * PAGE, f.page * PAGE);
+  const money_ = can("orders.viewMoney"), bulk = P.BULK_FIELDS_BY_ROLE[me().role].length > 0, editPk = can("orders.editPackages"), editLocked = can("orders.editLocked");
+  const ov = (o, k, v) => `<span class="num ${o.overrides.includes(k) ? "font-semibold" : ""}" ${o.overrides.includes(k) ? 'style="color:#b45309" title="Ghi đè thủ công"' : ""}>${kg(v)}${o.overrides.includes(k) ? "*" : ""}</span>`;
+  const tabs = ["", ...STATUSES].map((s) => `<button class="px-3 py-2 text-sm ${f.status === s ? "font-semibold" : "muted"}" style="border-bottom:2px solid ${f.status === s ? "var(--brand)" : "transparent"}" data-a="o-tab" data-v="${s}">${s || "Tất cả"} <span class="text-xs">(${(s ? all.filter((o) => o.status === s) : all).length})</span></button>`).join("");
+  const allOnPage = page.length && page.every((o) => f.sel.has(o.id));
+  return head("Quản lý vận đơn", "Đơn chưa khóa giá tự tính lại giá gốc, giá bán, lợi nhuận khi đổi kích thước, cân hoặc tuyến.",
+    `${bulk ? `<button class="btn o" data-a="bulk-open" ${f.sel.size ? "" : "disabled"}>Sửa đổi hàng loạt${f.sel.size ? ` (${f.sel.size})` : ""}</button>` : ""}${can("orders.import") ? `<button class="btn o" data-a="imp-open">Import đơn</button>` : ""}${can("orders.create") ? `<button class="btn" data-a="create-open">+ Tạo đơn</button>` : ""}`) + `
+  <div class="mb-3 flex flex-wrap border-b line">${tabs}</div>
+  <div class="mb-3 flex flex-wrap items-center gap-2"><input class="inp" style="max-width:380px" placeholder="Tìm mã vận đơn, tracking, mã/tên khách hàng" value="${esc(f.q)}" data-c="o-q">${f.sel.size ? `<span class="text-sm muted">Đã chọn ${f.sel.size} <button class="btn g sm" data-a="sel-clear">Bỏ chọn</button></span>` : ""}</div>
+  <div class="card scroll"><table class="t"><thead><tr>
+    ${bulk ? `<th><input type="checkbox" data-c="sel-page" ${allOnPage ? "checked" : ""} aria-label="Chọn cả trang"></th>` : ""}
+    <th>Mã vận đơn</th><th>Khách hàng</th><th>Tuyến → Chỉ định</th><th>Đến</th><th>Trạng thái</th><th>Ngày gửi</th><th class="num">Kiện</th><th class="num">Cân thực</th><th class="num">Quy đổi</th><th class="num">Tính phí</th><th class="num">Xuất hàng</th>
+    ${money_ ? `<th class="num">Giá bán</th><th class="num">Giá gốc</th><th class="num">Lợi nhuận</th>` : ""}<th>Công nợ</th>${editPk ? "<th></th>" : ""}
+  </tr></thead><tbody>${page.map((o) => `<tr style="${f.sel.has(o.id) ? "background:var(--soft)" : ""}">
+    ${bulk ? `<td><input type="checkbox" data-c="sel" value="${o.id}" ${f.sel.has(o.id) ? "checked" : ""} aria-label="Chọn ${esc(o.bill)}"></td>` : ""}
+    <td><b>${esc(o.bill)}</b> ${o.locked ? '<span title="Đã khóa giá">🔒</span>' : ""} ${o.warn ? `<span title="${esc(o.warn)}" style="color:#d97706">⚠</span>` : ""}<div class="text-xs muted">${esc(o.tracking)}</div></td>
+    <td><b>${o.customer}</b><div class="text-xs muted">${esc(cust(o.customer)?.name)}</div></td>
+    <td class="whitespace-nowrap">${esc(o.route)}<div class="text-xs" style="color:${o.assigned !== o.route ? "#b45309" : "var(--muted)"}">→ ${esc(o.assigned)}</div></td>
+    <td>${o.iso2}</td><td>${badge(o.status, STATUS_TONE[o.status])}</td><td class="num">${V.viDate(pd(o))}</td><td class="num">${o.packages.length}</td>
+    <td>${ov(o, "actual_weight", o.actual)}</td><td>${ov(o, "volumetric_weight", o.vol)}</td><td class="font-semibold">${ov(o, "billed_weight", o.billed)}</td><td>${ov(o, "shipped_weight", o.shipped)}</td>
+    ${money_ ? `<td class="num">${money(o.sell)}</td><td class="num muted">${money(o.cost)}</td><td class="num font-semibold" style="color:${o.sell - o.cost < 0 ? "#dc2626" : "#047857"}">${money(o.sell - o.cost)}</td>` : ""}
+    <td>${badge(o.debt, DEBT_TONE[o.debt])}</td>
+    ${editPk ? `<td><button class="btn g sm" data-a="pk-open" data-id="${o.id}" ${o.locked && !editLocked ? 'disabled title="Đơn đã khóa giá — cần Admin/Kế toán"' : 'title="Sửa kiện / kích thước / cân"'}>Kiện</button></td>` : ""}
+  </tr>`).join("") || `<tr><td colspan="20" class="py-8 text-center muted">Không có vận đơn phù hợp.</td></tr>`}</tbody></table></div>
+  <div class="mt-3 flex items-center justify-between text-sm muted"><span>${rows.length} đơn · ⚠ = chưa tra được giá · * = ghi đè thủ công</span><span class="flex items-center gap-2"><button class="btn o sm" data-a="o-page" data-v="${f.page - 1}" ${f.page <= 1 ? "disabled" : ""}>‹</button>Trang ${f.page}/${pages}<button class="btn o sm" data-a="o-page" data-v="${f.page + 1}" ${f.page >= pages ? "disabled" : ""}>›</button></span></div>`;
+}
+const routeOpts = (sel = "", blank = "") => (blank ? `<option value="">${blank}</option>` : "") + S.routes.map((r) => `<option value="${esc(r.code)}" ${r.code === sel ? "selected" : ""}>${esc(r.code)} (${r.service})</option>`).join("");
+const pkRow = (p = {}) => `<div class="pk grid grid-cols-[1fr_1fr_1fr_1fr_40px] gap-2">${["l", "w", "h", "kg"].map((k) => `<input class="inp" inputmode="decimal" data-k="${k}" value="${esc(p[k] ? String(Number(p[k])).replace(".", ",") : "")}" placeholder="${k === "kg" ? "kg" : "cm"}" aria-label="${k}">`).join("")}<button class="btn g sm" data-a="pk-del" aria-label="Xóa kiện">✕</button></div>`;
+const pkHead = `<div class="grid grid-cols-[1fr_1fr_1fr_1fr_40px] gap-2 text-xs muted"><span>Dài (cm)</span><span>Rộng (cm)</span><span>Cao (cm)</span><span>Cân thực (kg)</span><span></span></div>`;
+function readPkgs(root) {
+  const out = [];
+  for (const r of $$(".pk", root)) {
+    const v = Object.fromEntries($$("input", r).map((i) => [i.dataset.k, i.value.trim()]));
+    if (!v.l && !v.w && !v.h && !v.kg) continue;
+    const p = {};
+    for (const k of ["l", "w", "h", "kg"]) {
+      const n = IX.parseNumberCell(v[k] || "0", "weight");
+      if (n === undefined || n === null) throw new Error(`Giá trị "${v[k]}" không hợp lệ.`);
+      p[k] = n;
+    }
+    out.push(p);
+  }
+  return out;
+}
+function createDialog() {
+  openDialog("Tạo vận đơn nội bộ", `<form id="f-create" class="grid gap-4">
+    <div class="grid gap-3 sm:grid-cols-3">
+      <label class="f"><span>Khách hàng *</span><select class="inp" name="customer">${S.customers.map((c) => `<option value="${c.code}">${c.code} — ${esc(c.name)}</option>`).join("")}</select></label>
+      <label class="f"><span>Mã vận đơn *</span><input class="inp" name="bill" required></label>
+      <label class="f"><span>Tracking</span><input class="inp" name="tracking"></label>
+      <label class="f"><span>Tuyến vận chuyển * (giá bán)</span><select class="inp" name="route">${routeOpts("VNFZZXR")}</select></label>
+      <label class="f"><span>Tuyến chỉ định (giá gốc)</span><select class="inp" name="assigned">${routeOpts("", "Như tuyến vận chuyển")}</select></label>
+      <label class="f"><span>Điểm đến (ISO2) *</span><input class="inp uppercase" name="iso2" maxlength="2" value="US"></label>
+      <label class="f"><span>Ngày gửi hàng</span><input class="inp" type="date" name="shipped" value="${today()}"></label>
+      <label class="f sm:col-span-2"><span>Người nhận</span><input class="inp" name="receiver"></label>
+    </div>
+    <fieldset class="card grid gap-2 p-3"><legend class="px-1 text-sm font-medium">Kiện hàng</legend>${pkHead}<div id="pks" class="grid gap-2">${pkRow({ l: "30", w: "20", h: "15", kg: "0.8" })}</div><div><button type="button" class="btn o sm" data-a="pk-add">+ Thêm kiện</button></div></fieldset>
+    <div class="flex justify-end gap-2"><button type="button" class="btn o" data-a="close">Hủy</button><button class="btn" data-a="create-save" type="button">Tạo đơn & tính giá</button></div></form>`);
+}
+function bulkDialog() {
+  const allowed = P.BULK_FIELDS_BY_ROLE[me().role];
+  const F = {
+    assignedRouteCode: ["Tuyến chỉ định", `<select class="inp" name="assignedRouteCode">${routeOpts("", "Như tuyến vận chuyển")}</select>`, "Chỉ đổi cân xuất & giá gốc"],
+    routeCode: ["Tuyến vận chuyển", `<select class="inp" name="routeCode">${routeOpts()}</select>`, "Đổi cân tính phí & giá bán"],
+    destinationIso2: ["Điểm đến (ISO2)", `<input class="inp uppercase" name="destinationIso2" maxlength="2" placeholder="US">`, ""],
+    status: ["Trạng thái", `<select class="inp" name="status">${STATUSES.map((s) => `<option>${s}</option>`).join("")}</select>`, ""],
+    actualWeight: ["Trọng lượng thực", `<input class="inp" name="actualWeight" placeholder="kg">`, "Để trống = bỏ ghi đè"],
+    volumetricWeight: ["Trọng lượng quy đổi", `<input class="inp" name="volumetricWeight" placeholder="kg">`, "Để trống = bỏ ghi đè"],
+    billedWeight: ["Trọng lượng tính phí", `<input class="inp" name="billedWeight" placeholder="kg">`, "Giá bán tính theo cân này"],
+    shippedWeight: ["Trọng lượng xuất hàng", `<input class="inp" name="shippedWeight" placeholder="kg">`, "Giá gốc tính theo cân này"],
+    trackingNumber: ["Tracking", `<input class="inp" name="trackingNumber">`, ""],
+    note: ["Ghi chú", `<input class="inp" name="note">`, ""],
+    priceLocked: ["Khóa giá", `<select class="inp" name="priceLocked"><option value="true">Khóa giá</option><option value="false">Mở khóa (tính lại ngay)</option></select>`, ""],
+  };
+  openDialog(`Sửa đổi hàng loạt — ${ui.orders.sel.size} đơn`, `<form id="f-bulk" class="grid gap-3">
+    <p class="text-sm muted">Chỉ trường được tick mới được cập nhật. Gõ vào ô sẽ tự tick.${can("orders.editLocked") ? "" : " Đơn đã khóa giá sẽ bị bỏ qua."}</p>
+    <div class="card divide-y" style="--tw-divide-opacity:1">${allowed.map((k) => `<div class="grid grid-cols-[22px_170px_1fr] items-start gap-3 p-2" data-c="bulk-row"><input type="checkbox" name="enable_${k}" class="mt-2 size-4" id="en_${k}"><label for="en_${k}" class="mt-2 text-sm font-medium">${F[k][0]}</label><div>${F[k][1]}${F[k][2] ? `<p class="mt-1 text-xs muted">${F[k][2]}</p>` : ""}</div></div>`).join("")}</div>
+    <div class="flex justify-end gap-2"><button type="button" class="btn o" data-a="close">Hủy</button><button type="button" class="btn" data-a="bulk-save">Cập nhật</button></div></form>`);
+}
+function applyBulk() {
+  const fd = new FormData($("#f-bulk"));
+  const fields = P.BULK_FIELDS_BY_ROLE[me().role].filter((k) => fd.get("enable_" + k) === "on");
+  if (!fields.length) return toast("Tick chọn ít nhất một trường.", "warn");
+  const W = { actualWeight: ["actual_weight", "actual"], volumetricWeight: ["volumetric_weight", "vol"], billedWeight: ["billed_weight", "billed"], shippedWeight: ["shipped_weight", "shipped"] };
+  const val = (k) => String(fd.get(k) ?? "").trim();
+  if (fields.includes("destinationIso2") && !/^[A-Za-z]{2}$/.test(val("destinationIso2"))) return toast("Điểm đến phải là mã ISO2.", "bad");
+  for (const k of Object.keys(W)) if (fields.includes(k) && val(k) && !IX.parseNumberCell(val(k), "weight")) return toast(`${k}: cân nặng không hợp lệ.`, "bad");
+  const affects = fields.some((f) => !["status", "trackingNumber", "note"].includes(f) && !(f === "priceLocked" && val(f) === "true"));
+  let done = 0, skipped = 0, failed = 0;
+  const cat = catalogOf(S);
+  for (const id of ui.orders.sel) {
+    const o = S.orders.find((x) => x.id === id);
+    if (!o) continue;
+    if (o.locked && !can("orders.editLocked")) { skipped++; continue; }
+    for (const f of fields) {
+      if (f === "routeCode") o.route = val(f);
+      else if (f === "assignedRouteCode") o.assigned = val(f) || (fields.includes("routeCode") ? val("routeCode") : o.route);
+      else if (f === "destinationIso2") o.iso2 = val(f).toUpperCase();
+      else if (f === "status") o.status = val(f);
+      else if (f === "trackingNumber") o.tracking = val(f);
+      else if (f === "note") o.note = val(f);
+      else if (f === "priceLocked") o.locked = val(f) === "true";
+      else {
+        const [key, col] = W[f];
+        if (!val(f)) o.overrides = o.overrides.filter((x) => x !== key);
+        else { o[col] = IX.parseNumberCell(val(f), "weight"); if (!o.overrides.includes(key)) o.overrides.push(key); }
+      }
+    }
+    if (affects) reprice(S, o, cat);
+    if (o.warn) failed++;
+    done++;
+  }
+  ui.orders.sel.clear();
+  save(); closeDialog(); render();
+  toast(`Đã cập nhật ${done} đơn${affects ? " và tính lại giá các đơn chưa khóa" : ""}${skipped ? `; bỏ qua ${skipped} đơn đã khóa giá` : ""}${failed ? `; ${failed} đơn chưa tra được giá (⚠)` : ""}.`, skipped || failed ? "warn" : "ok");
+}
+
+// ---- Import đơn: dán từ Excel / Google Sheet
+function parseTsv(t) {
+  const rows = []; let row = [], cur = "", q = false;
+  t = t.replace(/\r\n?/g, "\n");
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (q) { if (ch === '"') { if (t[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"' && cur === "") q = true;
+    else if (ch === "\t") { row.push(cur); cur = ""; }
+    else if (ch === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else cur += ch;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows.map((r) => r.map((v) => (v.trim() === "" ? null : v)));
+}
+const ORDER_SAMPLE = [
+  ["Thời gian phát sinh đơn", "STT", "Mã vận đơn", "Tuyến vận chuyển", "Giá trị khai báo", "Tên hàng tiếng Việt", "Người nhận", "Điểm đến", "Số kiện", "Trọng lượng thực tế(kg)", "Dài ", "Rộng", "Cao"],
+  ["25/11/2026 09:12:00", "1", "#AP2001", "VNFZZXR", "20", "Quần áo", "David Lee", "us", "1", "0,786", "34", "23", "11"],
+  ["25/11/2026 09:30:41", "2", "#AP2002", "VN-YTYCPREC", "15", "Áo", "Emma Stone", "US", "1", "1,25", "30", "20", "10"],
+  ["25/11/2026 10:02:10", "3", "#AP2003", "UPS HAN S5500", "40", "Giày", "Liam Smith", "CA", "2", "7,5", "40", "30", "25"],
+  ["25/11/2026 10:15:00", "4", "#AP1376", "VNFZZXR", "20", "Quần áo", "David Lee", "US", "1", "0,5", "20", "15", "10"],
+  ["25/11/2026 10:20:00", "5", "#AP2004", "VNFZZXR", "20", "Mũ", "Ava Taylor", "USA", "1", "0,3", "20", "15", "10"],
+  ["25/11/2026 10:21:00", "6", "#AP2001", "VNFZZXR", "20", "Quần áo", "David Lee", "US", "1", "0,786", "34", "23", "11"],
+].map((r) => r.join("\t")).join("\n");
+function importDialog() {
+  openDialog("Import vận đơn (dán từ Excel / Google Sheet)", `<div class="grid gap-3">
+    <p class="text-sm muted">Chọn vùng dữ liệu (gồm dòng tiêu đề) trong Excel/Google Sheet → Ctrl+C → dán vào ô dưới. Cột nhận theo <b>tên tiêu đề</b> (không phân biệt dấu, thứ tự). Đơn trùng order_key (Mã KH|Mã vận đơn) tự động bị chặn.</p>
+    <div class="grid gap-3 sm:grid-cols-[1fr_auto]"><label class="f"><span>Khách hàng mặc định (khi không có cột Mã khách hàng)</span><select class="inp" id="imp-cust">${S.customers.map((c) => `<option value="${c.code}">${c.code} — ${esc(c.name)}</option>`).join("")}</select></label><div class="flex items-end"><button class="btn o" data-a="imp-sample">Dán dữ liệu mẫu (tab DON)</button></div></div>
+    <textarea class="inp" id="imp-text" rows="8" placeholder="Dán dữ liệu ở đây…" style="font-family:ui-monospace,monospace;font-size:12px"></textarea>
+    <div class="flex gap-2"><button class="btn o" data-a="imp-check">Kiểm tra dữ liệu</button><button class="btn" data-a="imp-commit" id="imp-commit" disabled>Nhập đơn</button></div>
+    <div id="imp-out"></div></div>`, true);
+}
+function analyzeImport() {
+  const rows = parseTsv($("#imp-text").value);
+  const res = IP.parseOrderSheet(rows, { defaultCustomerCode: $("#imp-cust").value });
+  const keys = new Set(S.orders.map((o) => `${o.customer}|${o.bill}`));
+  const valid = [], dupDb = [], errors = [...res.errors];
+  for (const d of res.drafts) {
+    const bad = [];
+    if (!cust(d.customerCode)) bad.push(`khách hàng ${d.customerCode} chưa có`);
+    if (!S.routes.some((r) => r.code === d.routeCode)) bad.push(`tuyến ${d.routeCode} chưa có`);
+    if (bad.length) errors.push({ row: d.rows[0], billCode: d.billCode, message: bad.join("; ") });
+    else if (keys.has(d.orderKey)) dupDb.push(d.orderKey);
+    else valid.push(d);
+  }
+  return { res, valid, dupDb, errors };
+}
+
+// =============================================================================
+// TRA CỨU GIÁ GỐC
+// =============================================================================
+function runQuote() {
+  const q = ui.quote, iso2 = q.to.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(iso2)) return { error: "Điểm đến phải là mã ISO2 (VD: US, GB)." };
+  const w = IX.parseNumberCell(q.kg, "weight");
+  if (!w || w === "0") return { error: "Nhập trọng lượng lớn hơn 0." };
+  const pkg = { actualWeight: w };
+  if (q.vol === "DIM" && (q.l || q.w || q.h)) Object.assign(pkg, { lengthCm: IX.parseNumberCell(q.l, "weight") || "0", widthCm: IX.parseNumberCell(q.w, "weight") || "0", heightCm: IX.parseNumberCell(q.h, "weight") || "0" });
+  if (q.vol === "CBM" && q.cbm) pkg.volumeCbm = IX.parseNumberCell(q.cbm, "price") || "0";
+  const rows = [], na = [];
+  for (const r of S.routes) {
+    const sel = E.selectVersion(S.versions, { routeCode: r.code, kind: "COST", date: q.date });
+    if (!sel || !sel.version.zones.some((z) => z.countries.includes(iso2))) continue;
+    const route = { routeCode: r.code, serviceType: r.service, weightCalcMode: r.mode, dimDivisor: r.dim };
+    try {
+      const bill = E.calcBillWeight([pkg], route);
+      const qv = E.quoteVersion(sel.version, iso2, bill.totalWeight);
+      rows.push({ r, bill, qv, v: sel.version });
+    } catch (e) { na.push([r.code, e.message]); }
+  }
+  rows.sort((a, b) => Number(a.qv.amount) - Number(b.qv.amount));
+  return { rows, na, iso2, w };
+}
+function vQuote() {
+  const q = ui.quote, res = q.ran ? runQuote() : null;
+  const inp = (k, label, ph, extra = "") => `<label class="f"><span>${label}</span><input class="inp" data-q="${k}" value="${esc(q[k])}" placeholder="${ph}" ${extra}></label>`;
+  return head("Tra cứu báo giá tuyến gốc", "So sánh giá gốc NCC của mọi tuyến; mỗi tuyến tự áp DIM, cách tính cân và quy tắc làm tròn riêng.") + `
+  <div class="card mb-4 grid items-end gap-3 p-4 sm:grid-cols-3 lg:grid-cols-[100px_120px_150px_1fr_160px_auto]">
+    ${inp("to", "Điểm đến (ISO2)", "US", 'maxlength="2"')}${inp("kg", "Trọng lượng (kg)", "1,5")}
+    <label class="f"><span>Thể tích theo</span><select class="inp" data-q="vol"><option value="DIM" ${q.vol === "DIM" ? "selected" : ""}>Kích thước (cm)</option><option value="CBM" ${q.vol === "CBM" ? "selected" : ""}>Thể tích (CBM)</option></select></label>
+    <div class="grid grid-cols-4 gap-2">${inp("l", "Dài", "cm")}${inp("w", "Rộng", "cm")}${inp("h", "Cao", "cm")}${inp("cbm", "CBM", "m³")}</div>
+    <label class="f"><span>Ngày áp giá</span><input class="inp" type="date" data-q="date" value="${q.date}"></label>
+    <button class="btn" data-a="quote-run">Tra cứu</button>
+  </div>
+  ${!res ? "" : res.error ? `<div class="card p-3" style="color:#dc2626">${esc(res.error)}</div>` : `
+  <p class="mb-2 text-sm"><b>${res.rows.length} tuyến phù hợp</b> <span class="muted">→ ${res.iso2} · ${kg(res.w)} kg · áp giá ngày ${V.viDate(q.date)}</span></p>
+  <div class="card scroll"><table class="t"><thead><tr><th>#</th><th>Tuyến</th><th>Dịch vụ</th><th class="num">Cân tính phí</th><th class="num">Đơn giá/kg</th><th class="num" style="background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--brand)">Tổng tiền (VND)</th><th class="num">DIM</th><th>Hiệu lực bảng giá</th></tr></thead><tbody>
+  ${res.rows.map((x, i) => `<tr ${i === 0 ? 'style="background:color-mix(in srgb,#10b981 10%,transparent)"' : ""}><td class="muted">${i + 1}</td><td><b>${esc(x.r.code)}</b><div class="text-xs muted">NCC: ${esc(x.r.supplier)}</div></td><td>${badge(x.r.service, "info")}</td>
+    <td class="num"><b>${kg(x.bill.totalWeight)} kg</b>${x.r.mode === "MAX_ACTUAL_VOL" && Number(x.bill.packages[0].volumetricWeight) ? `<div class="text-xs muted">quy đổi ${kg(x.bill.packages[0].volumetricWeight)}</div>` : ""}</td>
+    <td class="num">${x.qv.unitPrice ? money(x.qv.unitPrice) : '<span class="text-xs muted">Trọn mốc</span>'}</td>
+    <td class="num text-base font-semibold" style="background:color-mix(in srgb,var(--accent) 7%,transparent);color:var(--brand)">${money(x.qv.amount)} ${i === 0 ? badge("Rẻ nhất", "ok") : ""}</td>
+    <td class="num">${x.r.mode === "ACTUAL_ONLY" ? badge("Cân thực", "warn") : Number(x.r.dim).toLocaleString("vi-VN")}</td>
+    <td class="num">${V.viDate(x.v.effectiveFrom)} → ${V.viDate(x.v.effectiveTo)}</td></tr>`).join("") || `<tr><td colspan="8" class="py-6 text-center muted">Không có tuyến nào có bảng giá gốc tới ${res.iso2}.</td></tr>`}
+  </tbody></table></div>
+  ${res.na.length ? `<details class="mt-2 text-sm"><summary class="cursor-pointer muted">${res.na.length} tuyến không phục vụ mức cân này</summary><ul class="mt-1 list-disc pl-5 text-xs muted">${res.na.map(([c, m]) => `<li><b>${esc(c)}</b>: ${esc(m)}</li>`).join("")}</ul></details>` : ""}`}
+  <p class="mt-3 text-xs muted">Thử: đổi kích thước để thấy tuyến DIM thấp bị đẩy cân; đổi ngày áp giá về 15/10/2026 để thấy VNFZZXR dùng bảng giá tháng 10.</p>`;
+}
+
+// =============================================================================
+// KHO BẢNG GIÁ
+// =============================================================================
+const scopeLabel = (v) => (v.customerCode ? `KH ${v.customerCode}` : v.priceGroupCode ? `Nhóm ${v.priceGroupCode}` : "Chung");
+const MODE_LABEL = { MA_TRAN: "Ma trận", THEO_KG: "Theo kg", "MA_TRAN+THEO_KG": "Ma trận + Theo kg" };
+const VSTATUS = { ACTIVE: ["Đang áp dụng", "ok"], DRAFT: ["Nháp", "muted"], ARCHIVED: ["Lưu trữ", "warn"] };
+function vPricing() {
+  if (ui.ver) return vVersion(S.versions.find((v) => v.id === ui.ver));
+  const list = S.versions.filter((v) => (!ui.verKind || v.kind === ui.verKind) && (!ui.verRoute || v.routeCode === ui.verRoute)).sort((a, b) => a.routeCode.localeCompare(b.routeCode) || a.kind.localeCompare(b.kind) || (a.effectiveFrom < b.effectiveFrom ? 1 : -1));
+  return head("Kho bảng giá", "Mỗi lần nhập tạo phiên bản theo ngày hiệu lực; phiên bản cũ giữ nguyên để tính đúng đơn quá khứ.", can("pricing.manage") ? `<button class="btn" data-a="pimp-open">Import bảng giá</button>` : "") + `
+  <div class="mb-3 flex flex-wrap gap-2"><select class="inp" style="width:220px" data-c="ver-route"><option value="">Tất cả tuyến</option>${S.routes.map((r) => `<option ${r.code === ui.verRoute ? "selected" : ""}>${esc(r.code)}</option>`).join("")}</select><select class="inp" style="width:160px" data-c="ver-kind"><option value="">Giá gốc & bán</option><option value="COST" ${ui.verKind === "COST" ? "selected" : ""}>Giá gốc</option><option value="SELL" ${ui.verKind === "SELL" ? "selected" : ""}>Giá bán</option></select></div>
+  <div class="card scroll"><table class="t"><thead><tr><th>#</th><th>Tuyến</th><th>Loại</th><th>Phạm vi</th><th>Chế độ</th><th>Hiệu lực</th><th class="num">Vùng / Nước</th><th>Trạng thái</th></tr></thead><tbody>
+  ${list.map((v) => `<tr class="cursor-pointer" data-a="ver-open" data-id="${v.id}"><td style="color:var(--accent)">${v.id}</td><td><b>${esc(v.routeCode)}</b></td><td>${badge(v.kind === "COST" ? "Giá gốc" : "Giá bán", v.kind === "COST" ? "warn" : "info")}</td><td>${scopeLabel(v)}</td><td>${MODE_LABEL[v.mode]}</td><td class="num">${V.viDate(v.effectiveFrom)} → ${V.viDate(v.effectiveTo)}</td><td class="num">${v.zones.length} / ${v.zones.reduce((t, z) => t + z.countries.length, 0)}</td><td>${badge(...VSTATUS[v.status || "ACTIVE"])}</td></tr>`).join("")}
+  </tbody></table></div>`;
+}
+function vVersion(v) {
+  const weights = [...new Set(v.zones.flatMap((z) => z.matrix.map((t) => Number(t.weightMax))))].sort((a, b) => a - b);
+  const ranges = [...new Map(v.zones.flatMap((z) => z.perKg).map((t) => [`${t.weightMin}|${t.weightMax}`, t])).values()].sort((a, b) => a.weightMin - b.weightMin);
+  const hist = S.versions.filter((x) => x.routeCode === v.routeCode && x.kind === v.kind && x.customerCode === v.customerCode && x.priceGroupCode === v.priceGroupCode).sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1));
+  const st = v.status || "ACTIVE";
+  return `<button class="btn g sm mb-2" data-a="ver-back">‹ Kho bảng giá</button>` + head(`#${v.id} · ${v.routeCode}`, v.name, can("pricing.manage") ? `<button class="btn o" data-a="ver-toggle" data-id="${v.id}">${st === "ACTIVE" ? "Lưu trữ" : "Kích hoạt"}</button>` : "") + `
+  <div class="mb-4 grid gap-3 lg:grid-cols-[1fr_320px]"><div class="card grid grid-cols-2 gap-3 p-4 text-sm sm:grid-cols-4">
+    <div><p class="text-xs muted">Loại</p>${v.kind === "COST" ? "Giá gốc" : "Giá bán"}</div><div><p class="text-xs muted">Phạm vi</p>${scopeLabel(v)}</div><div><p class="text-xs muted">Chế độ</p>${MODE_LABEL[v.mode]}</div><div><p class="text-xs muted">Trạng thái</p>${badge(...VSTATUS[st])}</div>
+    <div><p class="text-xs muted">Hiệu lực từ</p>${V.viDate(v.effectiveFrom)}</div><div><p class="text-xs muted">Đến</p>${v.effectiveTo ? V.viDate(v.effectiveTo) : "Không thời hạn"}</div><div class="col-span-2"><p class="text-xs muted">Ghi chú</p>${esc(v.note)}</div></div>
+    <div class="card p-4 text-sm"><p class="mb-2 font-medium">Lịch sử phiên bản</p>${hist.map((h) => `<div class="flex justify-between gap-2 py-0.5"><a href="#bang-gia" data-a="ver-open" data-id="${h.id}" style="color:${h.id === v.id ? "var(--ink)" : "var(--accent)"};font-weight:${h.id === v.id ? 600 : 400}">#${h.id} · ${V.viDate(h.effectiveFrom)} → ${V.viDate(h.effectiveTo)}</a>${badge(...VSTATUS[h.status || "ACTIVE"])}</div>`).join("")}</div></div>
+  <div class="mb-3 flex flex-wrap gap-2">${v.zones.map((z) => `<span class="card px-3 py-1.5 text-sm"><b>${z.zoneCode}</b> <span class="muted">${z.countries.join(", ")}</span></span>`).join("")}</div>
+  ${weights.length ? `<h3 class="mb-2 font-semibold">Ma trận — giá trọn mốc (VND)</h3><div class="card scroll mb-4" style="max-height:420px"><table class="t"><thead><tr><th>Mốc ≤ kg</th>${v.zones.map((z) => `<th class="num">${z.zoneCode}<div class="font-normal">${z.countries.slice(0, 3).join(", ")}${z.countries.length > 3 ? "…" : ""}</div></th>`).join("")}</tr></thead><tbody>${weights.map((w) => `<tr><td class="num" style="text-align:left"><b>${kg(w)}</b></td>${v.zones.map((z) => { const t = z.matrix.find((m) => Number(m.weightMax) === w); return `<td class="num">${t ? money(t.price) : "–"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>` : ""}
+  ${ranges.length ? `<h3 class="mb-2 font-semibold">Theo kg — đơn giá/kg (VND)</h3><div class="card scroll"><table class="t"><thead><tr><th>Khoảng cân</th>${v.zones.map((z) => `<th class="num">${z.zoneCode}</th>`).join("")}</tr></thead><tbody>${ranges.map((r) => `<tr><td>&gt; ${kg(r.weightMin) === "–" ? "0" : kg(r.weightMin)} ${r.weightMax ? "– " + kg(r.weightMax) : "trở lên"} kg</td>${v.zones.map((z) => { const t = z.perKg.find((p) => p.weightMin === r.weightMin && p.weightMax === r.weightMax); return `<td class="num">${t ? money(t.unitPrice) : "–"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>` : ""}`;
+}
+function priceSample() {
+  const fz = S.versions.find((v) => v.routeCode === "VNFZZXR" && v.kind === "COST" && !v.effectiveTo);
+  const ups = S.versions.find((v) => v.routeCode === "UPS HAN S5500" && v.kind === "COST");
+  const up = (p) => String(Math.round((Number(p) * 1.05) / 1000) * 1000).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  const ws = ["0,10", "0,20", "0,50", "1,00", "2,00", "5,00", "10,00", "20,00"];
+  const fzPrice = (zi, w) => up(fz.zones[zi].matrix.find((m) => Number(m.weightMax) === Number(w.replace(",", "."))).price);
+  const upsPrice = (zi, w) => { const t = ups.zones[zi].matrix.find((m) => Number(m.weightMax) === Number(w.replace(",", "."))); return t ? up(t.price) : "-"; };
+  const rows = [
+    ["VNFZZXR", "", "", "", "UPS HAN S5500", "", ""],
+    ["Khối lượng (KG)", "US – Mỹ (VND)", "GB – Anh (VND)", "DE – Đức (VND)", "Khối lượng (KG)", "US – Mỹ (VND)", "CA – Canada (VND)"],
+    ...ws.map((w) => [w, fzPrice(0, w), fzPrice(1, w), fzPrice(2, w), w === "0,10" || w === "0,20" ? "" : w, w === "0,10" || w === "0,20" ? "" : upsPrice(0, w), w === "0,10" || w === "0,20" ? "" : upsPrice(1, w)]),
+    ["", "", "", "", "21-44", up(ups.zones[0].perKg[0].unitPrice), up(ups.zones[1].perKg[0].unitPrice)],
+    ["", "", "", "", "45-99", up(ups.zones[0].perKg[1].unitPrice), up(ups.zones[1].perKg[1].unitPrice)],
+    ["", "", "", "", "100+", up(ups.zones[0].perKg[2].unitPrice), up(ups.zones[1].perKg[2].unitPrice)],
+    ["", "", "", "", "300+", up(ups.zones[0].perKg[3].unitPrice), up(ups.zones[1].perKg[3].unitPrice)],
+  ];
+  return rows.map((r) => r.join("\t")).join("\n");
+}
+function priceImportDialog() {
+  const first = (() => { const d = new Date(); return today().slice(0, 8) + "01"; })();
+  openDialog("Import bảng giá (ma trận ngang)", `<div class="grid gap-3">
+    <p class="text-sm muted">Copy bảng giá trong Excel (dòng 1: tên tuyến theo cụm; dòng 2: “Khối lượng (KG)” + các cột “US – Mỹ (VND)”) rồi dán vào ô dưới. Mốc số → Ma trận; 21-44, 45-99, 100+, 300+ → Theo kg.</p>
+    <div class="grid gap-3 sm:grid-cols-3"><label class="f"><span>Loại bảng giá</span><select class="inp" id="pi-kind"><option value="COST">Giá gốc (NCC)</option><option value="SELL">Giá bán chung</option></select></label>
+    <label class="f"><span>Ngày hiệu lực *</span><input class="inp" type="date" id="pi-date" value="${today() > "2026-12-01" ? today() : "2026-12-01"}"></label><div class="flex items-end"><button class="btn o" data-a="pimp-sample">Dán bảng giá mẫu (+5%)</button></div></div>
+    <textarea class="inp" id="pi-text" rows="8" style="font-family:ui-monospace,monospace;font-size:12px" placeholder="Dán bảng giá ở đây…"></textarea>
+    <div class="flex gap-2"><button class="btn o" data-a="pimp-check">Xem trước</button><button class="btn" id="pi-commit" data-a="pimp-commit" disabled>Xác nhận nhập</button></div><div id="pi-out"></div></div>`, true);
+}
+function analyzePrice() {
+  const kind = $("#pi-kind").value, from = $("#pi-date").value;
+  const parsed = IX.parsePriceWorkbook([{ name: "Dữ liệu dán", rows: parseTsv($("#pi-text").value) }]);
+  const blocks = parsed.blocks.map((b) => {
+    const exists = S.routes.some((r) => r.code === b.routeCode);
+    const active = S.versions.filter((v) => v.routeCode === b.routeCode && v.kind === kind && (v.status || "ACTIVE") === "ACTIVE" && !v.customerCode && !v.priceGroupCode);
+    return { b, exists, plan: exists ? V.planNewVersion(active.map((v) => ({ id: v.id, effectiveFrom: v.effectiveFrom, effectiveTo: v.effectiveTo })), from) : null };
+  });
+  const errors = [...parsed.errors, ...blocks.filter((x) => !x.exists).map((x) => `Tuyến ${x.b.routeCode} chưa có trong Danh mục.`), ...blocks.filter((x) => x.plan && !x.plan.ok).map((x) => `${x.b.routeCode}: ${x.plan.error}`)];
+  return { kind, from, blocks, errors };
+}
+
+// =============================================================================
+// BẢNG KÊ
+// =============================================================================
+function vStatements() {
+  if (ui.stNew) return vStatementNew();
+  if (ui.st) return vStatement(S.statements.find((s) => s.id === ui.st));
+  const list = S.statements.filter((s) => inScope(s.customer)).sort((a, b) => (a.issuedAt < b.issuedAt ? 1 : -1));
+  return head("Bảng kê thanh toán", "Tạo từ đơn chưa lên bảng kê; đơn được khóa cứng giá. Mã SKLddMMyyXXXX.", can("statements.manage") ? `<button class="btn" data-a="st-new">+ Tạo bảng kê</button>` : "") + `
+  <div class="card scroll"><table class="t"><thead><tr><th>Mã bảng kê</th><th>Tên bảng kê</th><th>Ngày tạo</th><th class="num">Số đơn</th><th class="num">Tổng tiền</th><th class="num">Đã thu</th><th>Công nợ</th><th>Trạng thái</th></tr></thead><tbody>
+  ${list.map((s) => `<tr class="cursor-pointer" data-a="st-open" data-id="${s.id}"><td style="color:var(--accent)"><b>${s.no}</b></td><td>${esc(s.name)}</td><td class="num">${V.viDate(s.issuedAt.slice(0, 10))}</td><td class="num">${s.items.length}</td><td class="num font-semibold">${money(s.total)}</td><td class="num muted">${money(s.paid)}</td><td>${badge(s.debt, DEBT_TONE[s.debt])}</td><td>${s.status === "ACTIVE" ? badge("Đang hiệu lực", "ok") : badge("Đã hủy", "bad")}</td></tr>`).join("") || `<tr><td colspan="8" class="py-6 text-center muted">Chưa có bảng kê.</td></tr>`}
+  </tbody></table></div>`;
+}
+function vStatementNew() {
+  const n = ui.stNew;
+  const os = S.orders.filter((o) => o.customer === n.cust && o.debt === "Chưa thanh toán" && (!n.from || pd(o) >= n.from) && (!n.to || pd(o) <= n.to)).sort((a, b) => (pd(a) < pd(b) ? -1 : 1));
+  const picked = os.filter((o) => n.sel.has(o.id));
+  const c = cust(n.cust);
+  return `<button class="btn g sm mb-2" data-a="st-back">‹ Bảng kê</button>` + head("Tạo bảng kê", "Lọc đơn chưa lên bảng kê theo khách hàng và Ngày gửi hàng, tick chọn rồi bấm Tạo.") + `
+  <div class="card mb-3 flex flex-wrap items-end gap-3 p-3"><label class="f"><span>Khách hàng</span><select class="inp" data-c="stn-cust">${S.customers.map((x) => `<option value="${x.code}" ${x.code === n.cust ? "selected" : ""}>${x.code} — ${esc(x.name)}</option>`).join("")}</select></label>
+  <label class="f"><span>Từ ngày gửi</span><input class="inp" type="date" data-c="stn-from" value="${n.from}"></label><label class="f"><span>Đến ngày gửi</span><input class="inp" type="date" data-c="stn-to" value="${n.to}"></label></div>
+  <div class="card mb-3 flex flex-wrap items-center justify-between gap-2 p-3" style="position:sticky;top:0;z-index:5"><span>Đã chọn <b>${picked.length}</b>/${os.length} đơn · Tổng <b style="color:var(--brand);font-size:16px">${money(picked.reduce((t, o) => t + Number(o.sell), 0))} VND</b> · Tên: <i>${esc(c.name)} - ${c.code} - SKLddMMyyXXXX</i></span><button class="btn" data-a="st-create" ${picked.length ? "" : "disabled"}>Tạo bảng kê (${picked.length})</button></div>
+  <div class="card scroll"><table class="t"><thead><tr><th><input type="checkbox" data-c="stn-all" ${os.length && picked.length === os.length ? "checked" : ""}></th><th>Ngày gửi</th><th>Mã vận đơn</th><th>Tracking</th><th>Đến</th><th>Người nhận</th><th class="num">Kiện</th><th class="num">Cân tính phí</th><th>Tuyến</th><th>Trạng thái</th><th class="num">Chi phí</th></tr></thead><tbody>
+  ${os.map((o) => `<tr><td><input type="checkbox" data-c="stn-sel" value="${o.id}" ${n.sel.has(o.id) ? "checked" : ""}></td><td class="num">${V.viDate(pd(o))}</td><td><b>${esc(o.bill)}</b> ${o.locked ? "🔒" : ""}</td><td class="muted">${esc(o.tracking)}</td><td>${o.iso2}</td><td>${esc(o.receiver)}</td><td class="num">${o.packages.length}</td><td class="num">${kg(o.billed)}</td><td>${esc(o.route)}</td><td>${badge(o.status, STATUS_TONE[o.status])}</td><td class="num ${Number(o.sell) ? "font-medium" : ""}" style="${Number(o.sell) ? "" : "color:#d97706"}">${Number(o.sell) ? money(o.sell) : "Chưa có giá"}</td></tr>`).join("") || `<tr><td colspan="11" class="py-6 text-center muted">Không có đơn chưa lên bảng kê.</td></tr>`}
+  </tbody></table></div>`;
+}
+function vStatement(s) {
+  const c = cust(s.customer);
+  const payload = SF.vietQrPayload({ amount: s.total - s.paid, note: s.no });
+  let qr = `<p class="text-xs" style="word-break:break-all">${esc(payload)}</p>`;
+  try { const q = qrcode(0, "M"); q.addData(payload); q.make(); qr = q.createSvgTag({ cellSize: 3, margin: 2, scalable: true }); } catch {}
+  const NOTES = ["Để bảo vệ quyền lợi của quý khách hàng và tránh ảnh hưởng thời gian giao hàng, quý khách hàng vui lòng đối chiếu và thanh toán số tiền trên trong đúng thời gian quy định.", "Trong trường hợp quý khách hàng không thanh toán kịp thời dẫn đến việc giao hàng bị chậm trễ hoặc các vấn đề phát sinh khác, công ty chúng tôi không chịu bất kỳ trách nhiệm nào."];
+  const H = ["STT", "Thời gian", "Mã vận đơn", "Tracking", "Điểm Đến", "Người nhận", "Số kiện", "Trọng lượng tính phí", "Tuyến vận chuyển", "Chi phí", "Ghi chú"];
+  return `<button class="btn g sm mb-2" data-a="st-back">‹ Bảng kê</button>` + head(s.no, s.name, `<button class="btn o" data-a="st-copy" data-id="${s.id}">Sao chép dữ liệu (dán vào Excel)</button>${s.status === "ACTIVE" && can("statements.manage") ? `<button class="btn o" data-a="st-cancel" data-id="${s.id}" ${s.paid > 0 ? 'disabled title="Đã có thanh toán"' : ""}>Hủy bảng kê</button>` : ""}`) + `
+  ${s.status === "CANCELLED" ? `<div class="card mb-3 p-3" style="border-color:#dc2626;color:#dc2626">Đã hủy — ${esc(s.cancelReason || "không ghi lý do")}. Các đơn không thuộc bảng kê hiệu lực khác đã về “Chưa thanh toán”.</div>` : ""}
+  <div class="card mb-3 grid grid-cols-2 gap-3 p-4 text-sm sm:grid-cols-4"><div><p class="text-xs muted">Tổng tiền</p><b style="color:var(--brand)">${money(s.total)} VND</b></div><div><p class="text-xs muted">Đã thu</p>${money(s.paid)}</div><div><p class="text-xs muted">Còn lại</p>${money(s.total - s.paid)}</div><div><p class="text-xs muted">Công nợ</p>${badge(s.debt, DEBT_TONE[s.debt])}</div></div>
+  <p class="mb-2 text-xs muted">Xem trước file Excel bảng kê (bố cục mẫu SkyLane). Bản chạy thử không tải được file .xlsx — bản thật xuất bằng exceljs.</p>
+  <div class="scroll rounded-lg border line"><div class="inv relative p-6" style="min-width:980px">
+    <img src="${LOGO}" alt="" width="64" height="60" style="position:absolute;left:18px;top:14px">
+    <p style="text-align:center;font-size:24px;font-weight:700;margin:6px 0 2px">CÔNG TY TNHH SKYLANE LOGISTICS</p>
+    <p style="text-align:center;font-size:26px;font-weight:700;margin:0 0 8px">BẢNG KÊ CHI TIẾT CƯỚC VẬN CHUYỂN</p>
+    <p style="font-size:15px;font-weight:700;margin:0 0 6px"><span style="display:inline-block;width:150px;text-align:center">Tên khách hàng:</span>${esc(c.name)}</p>
+    <table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr>${H.map((h) => `<th style="font-weight:700">${h}</th>`).join("")}</tr></thead><tbody>
+    ${s.items.map((i) => `<tr><td style="text-align:center">${i.line}</td><td style="text-align:center">${i.date}</td><td>${esc(i.bill)}</td><td>${esc(i.tracking)}</td><td>${i.iso2}</td><td>${esc(i.receiver)}</td><td style="text-align:right">${i.pkgs}</td><td style="text-align:right">${Number(i.billed).toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td><td>${esc(i.route)}</td><td style="text-align:right">${money(i.amount)}</td><td>${esc(i.note)}</td></tr>`).join("")}
+    <tr><td colspan="8" style="border:0"></td><td style="text-align:center;font-weight:700">TỔNG</td><td style="text-align:right;font-weight:700">${money(s.total)}</td><td style="text-align:center;font-weight:700">VND</td></tr></tbody></table>
+    <p style="font-weight:700;margin:22px 0 4px">&nbsp;&nbsp;LƯU Ý:</p>${NOTES.map((n) => `<p style="margin:0 0 4px">${n}</p>`).join("")}
+    <div style="display:flex;gap:32px;align-items:flex-start;margin-top:20px"><div style="line-height:1.7"><p style="margin:0">Quý công ty vui lòng thanh toán theo tài khoản dưới đây:</p><p style="margin:0;font-weight:700">TÀI KHOẢN NHẬN TIỀN:</p><p style="margin:0">Tên người nhận: ${SF.BANK.accountName}</p><p style="margin:0">Ngân hàng: ${SF.BANK.bankName}</p><p style="margin:0">Số tài khoản: ${SF.BANK.accountNo}</p><p style="margin:0">Nội dung chuyển khoản: ${s.no}</p></div>
+    ${s.status === "ACTIVE" ? `<div style="width:150px;text-align:center"><div style="width:150px;height:150px">${qr}</div><i style="font-size:12px">Quét mã để chuyển khoản</i></div>` : `<b style="color:#c00000;font-size:18px">BẢNG KÊ ĐÃ HỦY</b>`}</div>
+  </div></div>`;
+}
+
+// =============================================================================
+// ĐỐI SOÁT THU TIỀN
+// =============================================================================
+function rcState() {
+  const list = scopedCustomers();
+  if (!ui.rc || !inScope(ui.rc.cust)) ui.rc = { cust: list[0]?.code, amount: "", alloc: {}, manual: false, proofs: [], done: null };
+  return ui.rc;
+}
+const openSts = (code) => S.statements.filter((s) => s.customer === code && s.status === "ACTIVE" && s.total - s.paid > 0).sort((a, b) => (a.issuedAt < b.issuedAt ? -1 : 1));
+function rcSuggest() {
+  const rc = ui.rc;
+  return RF.suggestAllocation(RF.parseThousands(rc.amount) || 0, openSts(rc.cust).map((s) => ({ id: s.id, statementNo: s.no, balance: String(s.total - s.paid), issuedAt: s.issuedAt })));
+}
+function vReconcile() {
+  const rc = rcState();
+  if (!rc.cust) return head("Đối soát thu tiền") + `<div class="card p-4 muted">Bạn chưa phụ trách khách hàng nào.</div>`;
+  const manage = can("receipts.manage");
+  const sts = S.statements.filter((s) => s.customer === rc.cust && s.status === "ACTIVE");
+  const total = sts.reduce((t, s) => t + s.total, 0), paid = sts.reduce((t, s) => t + s.paid, 0);
+  const credit = S.receipts.filter((r) => r.customer === rc.cust).reduce((t, r) => t + r.overpaid, 0);
+  const preview = RF.formatReceiptNo(today(), (S.counters[`${RF.RECEIPT_PREFIX}|${today()}`] || 0) + 1);
+  const stat = (l, v, col, big) => `<div class="card p-3"><p class="text-xs muted">${l}</p><p class="mt-1 font-semibold num" style="text-align:left;font-size:${big ? 20 : 17}px;color:${col || "var(--ink)"}">${money(v)}</p></div>`;
+  const left = !manage ? "" : `<form id="f-rc" class="card grid h-fit gap-3 p-4" onsubmit="return false">
+    <div class="flex items-center justify-between"><h2 class="font-semibold">Thông tin phiếu thu</h2>${badge(preview, "info")}</div>
+    <label class="f"><span>Tài khoản nhận</span><input class="inp" name="account" value="${esc(RF.DEFAULT_RECEIVED_ACCOUNT)}"></label>
+    <label class="f"><span>Số tiền nhận (VND) *</span><input class="inp" id="rc-amount" inputmode="numeric" autocomplete="off" style="height:44px;text-align:right;font-size:18px;font-weight:600" value="${esc(rc.amount)}" placeholder="3.000.000" data-c="rc-amount"></label>
+    <p class="-mt-1 text-xs italic muted" id="rc-words">${rc.amount ? "Bằng chữ: " + esc(RF.vndToWords(RF.parseThousands(rc.amount))) : ""}</p>
+    <div class="grid grid-cols-2 gap-2"><label class="f"><span>Mã giao dịch / nội dung CK</span><input class="inp" name="bankRef" placeholder="FT2633…"></label><label class="f"><span>Người chuyển</span><input class="inp" name="payer"></label></div>
+    <div><p class="mb-1 text-xs font-medium muted">Ảnh minh chứng — <b>Ctrl+V</b> để dán ảnh chuyển khoản, hoặc chọn file</p><div class="flex min-h-[84px] flex-wrap items-center gap-2 rounded-lg border border-dashed line p-2" id="rc-proofs">${proofsHtml()}</div><input type="file" accept="image/*" multiple class="mt-1 text-xs" data-c="rc-file"></div>
+    <div class="rounded-lg p-3 text-sm" style="background:var(--soft)" id="rc-sum">${rcSumHtml()}</div>
+    <button class="btn" style="height:42px" data-a="rc-save" id="rc-save">Lưu phiếu thu</button></form>`;
+  return head("Đối soát thu tiền", "Ghi nhận phiếu thu, phân bổ vào bảng kê, cập nhật công nợ; dư → Thu thừa.") + `
+  <div class="card mb-4 flex flex-wrap items-center gap-2 p-3"><span class="text-sm font-medium">Khách hàng</span><select class="inp" style="width:280px" data-c="rc-cust">${scopedCustomers().map((c) => `<option value="${c.code}" ${c.code === rc.cust ? "selected" : ""}>${c.code} — ${esc(c.name)}</option>`).join("")}</select>${manage ? "" : `<span class="text-xs muted">(chỉ xem — vai trò của bạn không lập phiếu thu)</span>`}</div>
+  ${rc.done ? `<div class="card mb-4 p-3" style="border-color:#059669">${esc(rc.done)}</div>` : ""}
+  <div class="grid gap-4 ${manage ? "xl:grid-cols-[400px_1fr]" : ""}">${left}
+  <section class="grid gap-4"><div class="grid gap-3 sm:grid-cols-4">${stat("Tổng bảng kê", total)}${stat("Đã thanh toán", paid, "#047857")}${stat("Còn nợ", total - paid, "#dc2626", true)}${stat("Thu thừa (số dư có)", credit, "var(--accent)")}</div>
+  <div id="rc-sug">${rcSugHtml()}</div>
+  <div class="card scroll"><table class="t"><thead><tr><th>Bảng kê</th><th>Ngày tạo</th><th class="num">Tổng tiền</th><th class="num">Đã thu</th><th class="num">Còn nợ</th><th class="num" style="width:190px">Phân bổ lần này</th><th class="num">Còn thiếu sau thu</th></tr></thead><tbody>
+  ${openSts(rc.cust).map((s) => { const a = Number(RF.parseThousands(rc.alloc[s.id] || "")) || 0; return `<tr><td><b>${s.no}</b><div class="text-xs muted">${s.items.length} đơn · ${s.debt}</div></td><td class="num">${V.viDate(s.issuedAt.slice(0, 10))}</td><td class="num">${money(s.total)}</td><td class="num muted">${money(s.paid)}</td><td class="num font-semibold">${money(s.total - s.paid)}</td>
+    <td><div class="flex gap-1"><input class="inp" style="height:32px;text-align:right" inputmode="numeric" data-c="rc-alloc" data-id="${s.id}" value="${esc(rc.alloc[s.id] || "")}" ${manage ? "" : "disabled"}><button class="btn g sm" data-a="rc-full" data-id="${s.id}" ${manage ? "" : "disabled"}>Đủ</button></div></td>
+    <td class="num" id="rc-after-${s.id}">${afterHtml(s, a)}</td></tr>`; }).join("") || `<tr><td colspan="7" class="py-6 text-center muted">Không còn bảng kê nợ.</td></tr>`}
+  </tbody></table></div>
+  <div><h3 class="mb-2 text-sm font-semibold">Phiếu thu gần đây</h3><div class="card scroll"><table class="t"><thead><tr><th>Mã phiếu</th><th>Thời gian</th><th class="num">Số tiền</th><th>Phân bổ</th><th class="num">Thu thừa</th><th>Minh chứng</th></tr></thead><tbody>
+  ${S.receipts.filter((r) => r.customer === rc.cust).slice().reverse().map((r) => `<tr><td><b>${r.no}</b></td><td class="num">${V.viDate(r.receivedAt.slice(0, 10))} ${r.receivedAt.slice(11, 16)}</td><td class="num">${money(r.amount)}</td><td class="text-xs muted">${r.allocs.map((a) => `${S.statements.find((s) => s.id === a.sid)?.no}: ${money(a.amount)}`).join(", ") || "—"}</td><td class="num" style="color:var(--accent)">${r.overpaid ? money(r.overpaid) : "—"}</td><td>${r.proofs.length ? r.proofs.map((p) => `<img src="${p}" alt="" class="inline-block h-8 w-8 rounded object-cover">`).join(" ") : '<span class="text-xs muted">—</span>'}</td></tr>`).join("") || `<tr><td colspan="6" class="py-4 text-center muted">Chưa có phiếu thu.</td></tr>`}
+  </tbody></table></div></div></section></div>`;
+}
+const afterHtml = (s, a) => (a > 0 ? (s.total - s.paid - a <= 0 ? '<span style="color:#047857">Đã đủ</span>' : money(s.total - s.paid - a)) : "—");
+const proofsHtml = () => ui.rc.proofs.map((p, i) => `<span class="relative"><img src="${p}" alt="Minh chứng ${i + 1}" class="h-16 w-16 rounded object-cover"><button class="btn g sm absolute -right-2 -top-2" style="height:20px;padding:0 5px;background:var(--card)" data-a="rc-proof-del" data-i="${i}">✕</button></span>`).join("") || '<span class="text-xs muted">Chưa có ảnh</span>';
+function rcSumHtml() {
+  const amt = Number(RF.parseThousands(ui.rc.amount)) || 0;
+  const al = Object.values(ui.rc.alloc).reduce((t, v) => t + (Number(RF.parseThousands(v)) || 0), 0);
+  const over = amt - al;
+  return `<div class="flex justify-between"><span>Số tiền nhận</span><b class="num">${money(amt)} đ</b></div><div class="flex justify-between"><span>Phân bổ vào bảng kê</span><b class="num">${money(al)} đ</b></div><div class="flex justify-between" style="color:${over > 0 ? "#047857" : over < 0 ? "#dc2626" : "inherit"}"><span>${over >= 0 ? "Thu thừa (ghi có cho khách)" : "Phân bổ vượt số tiền"}</span><b class="num">${money(Math.abs(over))} đ</b></div>`;
+}
+function rcSugHtml() {
+  const amt = Number(RF.parseThousands(ui.rc.amount)) || 0;
+  if (!amt) return "";
+  const s = rcSuggest();
+  const lbl = { EXACT: "Khớp chính xác", COMBO: "Khớp gộp", FIFO: "FIFO cũ nhất trước", NONE: "" }[s.mode];
+  return `<div class="card flex flex-wrap items-center justify-between gap-2 p-3" style="background:var(--soft)"><span>✨ ${lbl ? badge(lbl, "info") : ""} ${esc(s.label)}</span>${ui.rc.manual ? `<button class="btn o sm" data-a="rc-apply">Áp dụng gợi ý</button>` : ""}</div>`;
+}
+function rcApplySuggestion() {
+  const s = rcSuggest();
+  ui.rc.alloc = Object.fromEntries(s.allocations.map((a) => [a.id, RF.formatThousands(a.amount)]));
+  ui.rc.manual = false;
+}
+function rcRefresh(full) {
+  if (full) return render();
+  const w = $("#rc-words"); if (w) w.textContent = ui.rc.amount ? "Bằng chữ: " + RF.vndToWords(RF.parseThousands(ui.rc.amount)) : "";
+  const s = $("#rc-sum"); if (s) s.innerHTML = rcSumHtml();
+  const g = $("#rc-sug"); if (g) g.innerHTML = rcSugHtml();
+  for (const st of openSts(ui.rc.cust)) {
+    const a = Number(RF.parseThousands(ui.rc.alloc[st.id] || "")) || 0;
+    const cell = $(`#rc-after-${st.id}`); if (cell) cell.innerHTML = afterHtml(st, a);
+    const inp = $(`[data-c="rc-alloc"][data-id="${st.id}"]`); if (inp && document.activeElement !== inp) inp.value = ui.rc.alloc[st.id] || "";
+  }
+}
+function addProofs(files) {
+  for (const f of files) {
+    if (!f.type.startsWith("image/") || ui.rc.proofs.length >= 5) continue;
+    const r = new FileReader();
+    r.onload = () => { ui.rc.proofs.push(r.result); const p = $("#rc-proofs"); if (p) p.innerHTML = proofsHtml(); };
+    r.readAsDataURL(f);
+  }
+}
+
+// =============================================================================
+// DANH MỤC
+// =============================================================================
+function vCustomers() {
+  const m = can("catalog.manage");
+  return head("Khách hàng", "Sale phụ trách, nhóm giá mặc định và % điều chỉnh quyết định giá bán.") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã KH</th><th>Tên</th><th>Sale phụ trách</th><th>Nhóm giá</th><th class="num">Điều chỉnh</th><th class="num">Số đơn</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
+  ${S.customers.map((c) => `<tr><td><b>${c.code}</b></td><td>${esc(c.name)}</td><td>${esc(S.users.find((u) => u.id === c.saleId)?.name || "—")}</td><td>${c.group ? badge(c.group, "info") : '<span class="muted">Chung</span>'}</td><td class="num">${Number(c.adjust) > 0 ? "+" : ""}${Number(c.adjust)}%</td><td class="num">${S.orders.filter((o) => o.customer === c.code).length}</td>${m ? `<td><button class="btn g sm" data-a="cu-edit" data-id="${c.code}">Sửa</button></td>` : ""}</tr>`).join("")}</tbody></table></div>
+  <p class="mt-2 text-xs muted">Ưu tiên giá bán: giá riêng Mã KH (SKL116 có giá riêng tuyến VNFZZXR) → nhóm giá × (1 + %) → bảng giá chung × (1 + %). Sửa % sẽ tính lại ngay đơn chưa khóa giá.</p>`;
+}
+function vRoutes() {
+  const m = can("catalog.manage");
+  return head("Tuyến vận chuyển", "Loại hình dịch vụ quyết định làm tròn; cách tính cân & DIM quyết định cân quy đổi.") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã tuyến</th><th>NCC</th><th>Dịch vụ</th><th>Làm tròn</th><th>Cách tính cân</th><th class="num">DIM</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
+  ${S.routes.map((r) => `<tr><td><b>${esc(r.code)}</b></td><td>${esc(r.supplier)}</td><td>${badge(r.service, "info")}</td><td class="text-xs muted">${SVC_ROUND[r.service]}</td><td>${r.mode === "ACTUAL_ONLY" ? badge("Chỉ cân thực", "warn") : badge("Max(thực, thể tích)")}</td><td class="num" style="${r.mode === "ACTUAL_ONLY" ? "text-decoration:line-through;color:var(--muted)" : ""}">${Number(r.dim).toLocaleString("vi-VN")}</td>${m ? `<td><button class="btn g sm" data-a="ro-edit" data-id="${esc(r.code)}">Sửa</button></td>` : ""}</tr>`).join("")}</tbody></table></div>
+  <p class="mt-2 text-xs muted">Đổi DIM hoặc cách tính cân sẽ tính lại ngay các đơn chưa khóa giá dùng tuyến này (cả tuyến vận chuyển lẫn tuyến chỉ định).</p>`;
+}
+
+// =============================================================================
+// Sự kiện
+// =============================================================================
+const A = {
+  close: closeDialog,
+  reset: () => { S = seed(); ui.orders.sel.clear(); ui.rc = null; ui.st = ui.stNew = ui.ver = null; save(); render(); toast("Đã đặt lại dữ liệu mẫu."); },
+  "dash-table": () => { ui.dash.table = !ui.dash.table; render(); },
+  "o-tab": (el) => { ui.orders.status = el.dataset.v; ui.orders.page = 1; render(); },
+  "o-page": (el) => { ui.orders.page = Number(el.dataset.v); render(); },
+  "sel-clear": () => { ui.orders.sel.clear(); render(); },
+  "create-open": createDialog,
+  "pk-add": () => $("#pks").insertAdjacentHTML("beforeend", pkRow()),
+  "pk-del": (el) => { const rows = $$(".pk", el.closest("#pks")); if (rows.length > 1) el.closest(".pk").remove(); else $$("input", el.closest(".pk")).forEach((i) => (i.value = "")); },
+  "create-save": () => {
+    const fd = new FormData($("#f-create"));
+    const bill = String(fd.get("bill")).trim().toUpperCase(), c = fd.get("customer"), iso2 = String(fd.get("iso2")).trim().toUpperCase();
+    if (!bill) return toast("Nhập mã vận đơn.", "bad");
+    if (!/^[A-Z]{2}$/.test(iso2)) return toast("Điểm đến phải là mã ISO2.", "bad");
+    if (S.orders.some((o) => o.customer === c && o.bill === bill)) return toast(`Trùng order_key ${c}|${bill} — đơn đã tồn tại.`, "bad");
+    let packages; try { packages = readPkgs($("#f-create")); } catch (e) { return toast(e.message, "bad"); }
+    const o = newOrder(S, { customer: c, bill, tracking: fd.get("tracking"), route: fd.get("route"), assigned: fd.get("assigned"), iso2, receiver: fd.get("receiver"), shippedAt: fd.get("shipped") ? fd.get("shipped") + "T10:00:00+07:00" : null, createdAt: new Date().toISOString(), packages });
+    reprice(S, o); S.orders.push(o); save(); closeDialog(); ui.orders.status = ""; render();
+    toast(`Đã tạo ${bill}: tính phí ${kg(o.billed)} kg${can("orders.viewMoney") ? `, giá bán ${money(o.sell)}, giá gốc ${money(o.cost)}` : ""}${o.warn ? " — ⚠ " + o.warn : ""}.`, o.warn ? "warn" : "ok");
+  },
+  "bulk-open": bulkDialog,
+  "bulk-save": applyBulk,
+  "pk-open": (el) => {
+    const o = S.orders.find((x) => x.id === Number(el.dataset.id));
+    openDialog(`Kiện hàng — ${o.bill}`, `<div class="grid gap-3" id="f-pk" data-id="${o.id}"><p class="text-sm muted">Tuyến ${esc(o.route)} (${S.routes.find((r) => r.code === o.route)?.service}) → chỉ định ${esc(o.assigned)}. ${o.locked ? "Đơn đã khóa giá — lưu kiện nhưng không tính lại giá." : "Lưu sẽ tính lại cân & giá ngay."}</p>${pkHead}<div id="pks" class="grid gap-2">${(o.packages.length ? o.packages : [{}]).map(pkRow).join("")}</div><div class="flex justify-between"><button class="btn o sm" data-a="pk-add">+ Thêm kiện</button><span class="flex gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="pk-save">Lưu kiện</button></span></div></div>`);
+  },
+  "pk-save": () => {
+    const box = $("#f-pk"), o = S.orders.find((x) => x.id === Number(box.dataset.id));
+    let packages; try { packages = readPkgs(box); } catch (e) { return toast(e.message, "bad"); }
+    const before = { billed: o.billed, sell: o.sell, cost: o.cost };
+    o.packages = packages; reprice(S, o); save(); closeDialog(); render();
+    toast(o.locked ? "Đã lưu kiện — đơn đã khóa giá nên giữ nguyên cân & tiền." : `Đã lưu ${packages.length} kiện. Tính phí ${kg(before.billed)} → ${kg(o.billed)} kg${can("orders.viewMoney") ? `; giá bán ${money(before.sell)} → ${money(o.sell)}` : ""}.`);
+  },
+  "imp-open": importDialog,
+  "imp-sample": () => { $("#imp-text").value = ORDER_SAMPLE; $("#imp-cust").value = "SKL116"; },
+  "imp-check": () => {
+    const a = analyzeImport();
+    $("#imp-commit").disabled = !a.valid.length;
+    $("#imp-commit").textContent = `Nhập ${a.valid.length} đơn mới`;
+    $("#imp-out").innerHTML = `<div class="flex flex-wrap gap-2 text-sm">${badge(`${a.valid.length} đơn mới · ${a.valid.reduce((t, d) => t + d.packages.length, 0)} kiện`, "ok")}${a.dupDb.length ? badge(`${a.dupDb.length} trùng trong hệ thống`, "warn") : ""}${a.res.duplicatesInFile.length ? badge(`${a.res.duplicatesInFile.length} trùng trong file`, "warn") : ""}${a.errors.length ? badge(`${a.errors.length} dòng lỗi`, "bad") : ""}</div>
+      ${a.res.ignoredColumns.length ? `<p class="mt-1 text-xs muted">Cột không dùng: ${esc(a.res.ignoredColumns.join(", "))}</p>` : ""}
+      ${a.errors.length ? `<ul class="mt-2 list-disc pl-5 text-xs" style="color:#dc2626">${a.errors.map((e) => `<li>${e.row ? "Dòng " + e.row : ""}${e.billCode ? " · " + esc(e.billCode) : ""}: ${esc(e.message)}</li>`).join("")}</ul>` : ""}
+      ${a.dupDb.length || a.res.duplicatesInFile.length ? `<p class="mt-2 text-xs" style="color:#b45309">Bị chặn trùng order_key: ${esc([...a.dupDb, ...a.res.duplicatesInFile.map((d) => `dòng ${d.row} (${d.orderKey})`)].join(", "))}</p>` : ""}
+      ${a.res.warnings.length ? `<ul class="mt-2 list-disc pl-5 text-xs muted">${a.res.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+      ${a.valid.length ? `<div class="card scroll mt-2"><table class="t"><thead><tr><th>order_key</th><th>Tuyến</th><th>Đến</th><th class="num">Kiện</th><th>Ngày phát sinh</th></tr></thead><tbody>${a.valid.map((d) => `<tr><td><b>${esc(d.orderKey)}</b></td><td>${esc(d.routeCode)}</td><td>${d.destinationIso2}</td><td class="num">${d.packages.length}</td><td class="num">${esc((d.createdAt || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
+  },
+  "imp-commit": () => {
+    const a = analyzeImport(), cat = catalogOf(S);
+    for (const d of a.valid) {
+      const o = newOrder(S, { customer: d.customerCode, bill: d.billCode, tracking: d.trackingNumber, route: d.routeCode, assigned: d.assignedRouteCode, iso2: d.destinationIso2, createdAt: d.createdAt || new Date().toISOString(), shippedAt: d.shippedAt, receiver: d.receiverName, note: d.note, source: "IMPORT", packages: d.packages.map((p) => ({ l: p.lengthCm, w: p.widthCm, h: p.heightCm, kg: p.actualWeight })) });
+      reprice(S, o, cat); S.orders.push(o);
+    }
+    save(); closeDialog(); ui.orders.status = ""; render();
+    toast(`Đã nhập ${a.valid.length} đơn, chặn ${a.dupDb.length + a.res.duplicatesInFile.length} đơn trùng, bỏ qua ${a.errors.length} dòng lỗi.`);
+  },
+  "quote-run": () => { $$("[data-q]").forEach((i) => (ui.quote[i.dataset.q] = i.value)); ui.quote.ran = true; render(); },
+  "ver-open": (el, e) => { e.preventDefault(); ui.ver = Number(el.dataset.id); render(); },
+  "ver-back": () => { ui.ver = null; render(); },
+  "ver-toggle": (el) => {
+    const v = S.versions.find((x) => x.id === Number(el.dataset.id));
+    if ((v.status || "ACTIVE") === "ACTIVE") v.status = "ARCHIVED";
+    else {
+      const clash = S.versions.find((x) => x !== v && (x.status || "ACTIVE") === "ACTIVE" && x.routeCode === v.routeCode && x.kind === v.kind && x.customerCode === v.customerCode && x.priceGroupCode === v.priceGroupCode && x.effectiveFrom <= (v.effectiveTo || "9999") && (x.effectiveTo || "9999") >= v.effectiveFrom);
+      if (clash) return toast(`Khoảng hiệu lực trùng với phiên bản #${clash.id} đang áp dụng.`, "bad");
+      v.status = "ACTIVE";
+    }
+    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => (o.route === v.routeCode || o.assigned === v.routeCode) && reprice(S, o, cat) && n++);
+    save(); render(); toast(`Đã ${v.status === "ACTIVE" ? "kích hoạt" : "lưu trữ"} phiên bản #${v.id}; tính lại ${n} đơn chưa khóa.`, v.status === "ACTIVE" ? "ok" : "warn");
+  },
+  "pimp-open": priceImportDialog,
+  "pimp-sample": () => ($("#pi-text").value = priceSample()),
+  "pimp-check": () => {
+    if (!$("#pi-date").value) return toast("Bắt buộc chọn Ngày hiệu lực.", "bad");
+    const a = analyzePrice();
+    $("#pi-commit").disabled = !!a.errors.length || !a.blocks.length;
+    $("#pi-out").innerHTML = (a.errors.length ? `<div class="card mb-2 p-3 text-sm" style="border-color:#dc2626;color:#dc2626"><b>Chưa thể nhập:</b><ul class="list-disc pl-5">${a.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>` : `<div class="card mb-2 p-3 text-sm" style="border-color:#059669">Hợp lệ — sẽ tạo ${a.blocks.length} phiên bản mới hiệu lực từ ${V.viDate(a.from)}.</div>`) +
+      a.blocks.map(({ b, plan }) => `<div class="card mb-2 p-3 text-sm"><div class="mb-1 flex flex-wrap items-center gap-2"><b>${esc(b.routeCode)}</b><span class="text-xs muted">${b.cellRef}</span>${badge(MODE_LABEL[b.mode])}${badge(b.currency, "muted")}</div>
+        <p>${b.countries.length} nước · ${b.zones.length} vùng: ${b.zones.map((z) => `<b>${z.zoneCode}</b> ${z.countries.join(", ")}`).join(" · ")}</p>
+        <p class="muted">Ma trận: ${b.fixedWeights.length ? `${kg(b.fixedWeights[0])} → ${kg(b.fixedWeights.at(-1))} kg (${b.fixedWeights.length} mốc)` : "—"} · Theo kg: ${b.ranges.map((r) => `(${kg(r.weightMin) === "–" ? "0" : kg(r.weightMin)}, ${r.weightMax ? kg(r.weightMax) : "∞"}]`).join(" ") || "—"}</p>
+        ${plan?.ok ? `<p class="mt-1 rounded p-2 text-xs" style="background:var(--soft)">${plan.close.map((c) => `Phiên bản #${c.id} (${V.viDate(c.effectiveFrom)} → ${V.viDate(c.oldEffectiveTo)}) sẽ kết thúc ${V.viDate(c.newEffectiveTo)} — giá cũ giữ nguyên cho đơn quá khứ.`).join(" ") || "Phiên bản đầu tiên."}</p>` : ""}
+        ${b.warnings.length ? `<details class="mt-1 text-xs"><summary style="color:#b45309">${b.warnings.length} cảnh báo</summary><ul class="list-disc pl-5 muted">${b.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></details>` : ""}</div>`).join("");
+  },
+  "pimp-commit": () => {
+    const a = analyzePrice();
+    if (a.errors.length) return toast(a.errors[0], "bad");
+    let id = Math.max(...S.versions.map((v) => v.id)) + 1;
+    for (const { b, plan } of a.blocks) {
+      plan.close.forEach((c) => (S.versions.find((v) => v.id === c.id).effectiveTo = c.newEffectiveTo));
+      S.versions.push({ id: id++, routeCode: b.routeCode, kind: a.kind, customerCode: null, priceGroupCode: null, mode: b.mode, effectiveFrom: a.from, effectiveTo: plan.newEffectiveTo, status: "ACTIVE", currency: b.currency, name: `${b.routeCode} · ${a.kind === "COST" ? "Giá gốc" : "Giá bán"} · Chung`, note: `Import dán từ Excel (${b.cellRef})`, zones: b.zones.map((z) => ({ zoneCode: z.zoneCode, countries: z.countries, matrix: z.matrix, perKg: z.perKg })) });
+    }
+    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => reprice(S, o, cat) && n++);
+    save(); closeDialog(); render(); toast(`Đã tạo ${a.blocks.length} phiên bản hiệu lực từ ${V.viDate(a.from)}. Đơn có ngày gửi trước ngày này vẫn dùng giá cũ.`);
+  },
+  "st-new": () => { ui.stNew = { cust: scopedCustomers()[0].code, from: "", to: "", sel: new Set() }; render(); },
+  "st-back": () => { ui.st = ui.stNew = null; render(); },
+  "st-open": (el) => { ui.st = Number(el.dataset.id); render(); },
+  "st-create": () => {
+    const n = ui.stNew;
+    try { const st = createStatement(S, n.cust, [...n.sel], n.from || null, n.to || null); save(); ui.stNew = null; ui.st = st.id; render(); toast(`Đã tạo ${st.name} (${st.items.length} đơn), chuyển “xuất bảng kê” và khóa giá các đơn.`); }
+    catch (e) { toast(e.message, "bad"); }
+  },
+  "st-copy": async (el) => {
+    const s = S.statements.find((x) => x.id === Number(el.dataset.id));
+    const tsv = [["STT", "Thời gian", "Mã vận đơn", "Tracking", "Điểm Đến", "Người nhận", "Số kiện", "Trọng lượng tính phí", "Tuyến vận chuyển", "Chi phí", "Ghi chú"].join("\t"), ...s.items.map((i) => [i.line, i.date, i.bill, i.tracking, i.iso2, i.receiver, i.pkgs, String(i.billed).replace(".", ","), i.route, i.amount, i.note].join("\t")), ["", "", "", "", "", "", "", "", "TỔNG", s.total, "VND"].join("\t")].join("\n");
+    try { await navigator.clipboard.writeText(tsv); toast("Đã sao chép — dán vào Excel."); } catch { toast("Trình duyệt chặn sao chép.", "warn"); }
+  },
+  "st-cancel": (el) => openDialog("Hủy bảng kê", `<div class="grid gap-3" data-id="${el.dataset.id}" id="f-cancel"><p class="text-sm muted">Bảng kê được đánh dấu “Đã hủy” (vẫn lưu lịch sử). Đơn không thuộc bảng kê hiệu lực khác về “Chưa thanh toán”; giá đơn vẫn khóa.</p><label class="f"><span>Lý do hủy</span><textarea class="inp" id="cancel-reason" rows="3"></textarea></label><div class="flex justify-end gap-2"><button class="btn o" data-a="close">Không hủy</button><button class="btn d" data-a="st-cancel-ok">Xác nhận hủy</button></div></div>`),
+  "st-cancel-ok": () => {
+    const s = S.statements.find((x) => x.id === Number($("#f-cancel").dataset.id));
+    s.status = "CANCELLED"; s.cancelReason = $("#cancel-reason").value.trim();
+    let n = 0;
+    s.items.forEach((it) => { const o = S.orders.find((x) => x.id === it.orderId); const other = S.statements.some((x) => x !== s && x.status === "ACTIVE" && x.items.some((i) => i.orderId === it.orderId)); if (o && !other) { o.debt = "Chưa thanh toán"; n++; } });
+    save(); closeDialog(); render(); toast(`Đã hủy ${s.no}; hoàn “Chưa thanh toán” cho ${n}/${s.items.length} đơn.`, "warn");
+  },
+  "rc-full": (el) => { const s = S.statements.find((x) => x.id === Number(el.dataset.id)); ui.rc.manual = true; ui.rc.alloc[s.id] = RF.formatThousands(String(s.total - s.paid)); rcRefresh(); },
+  "rc-apply": () => { rcApplySuggestion(); rcRefresh(); },
+  "rc-proof-del": (el) => { ui.rc.proofs.splice(Number(el.dataset.i), 1); $("#rc-proofs").innerHTML = proofsHtml(); },
+  "rc-save": () => {
+    const rc = ui.rc, fd = new FormData($("#f-rc"));
+    const allocs = Object.entries(rc.alloc).map(([sid, v]) => ({ sid: Number(sid), amount: RF.parseThousands(v) })).filter((a) => Number(a.amount) > 0);
+    try {
+      const r = saveReceipt(S, { customer: rc.cust, amount: RF.parseThousands(rc.amount), allocs, bankRef: fd.get("bankRef"), payer: fd.get("payer"), account: fd.get("account"), proofs: rc.proofs });
+      const sts = allocs.map((a) => S.statements.find((s) => s.id === a.sid)).map((s) => `${s.no} → ${s.debt}`).join("; ");
+      ui.rc = { cust: rc.cust, amount: "", alloc: {}, manual: false, proofs: [], done: `Đã lưu phiếu thu ${r.no} (${money(r.amount)} đ). ${sts}${r.overpaid ? `. Ghi nhận Thu thừa ${money(r.overpaid)} đ.` : "."}` };
+      save(); render();
+    } catch (e) { toast(e.message, "bad"); }
+  },
+  "cu-edit": (el) => {
+    const c = cust(el.dataset.id);
+    openDialog(`Sửa khách hàng ${c.code}`, `<div class="grid gap-3" id="f-cu" data-id="${c.code}"><label class="f"><span>Tên</span><input class="inp" name="name" value="${esc(c.name)}"></label>
+    <label class="f"><span>Sale phụ trách</span><select class="inp" name="saleId"><option value="">— Chưa gán —</option>${S.users.filter((u) => u.role === "SALE").map((u) => `<option value="${u.id}" ${u.id === c.saleId ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+    <label class="f"><span>Nhóm giá mặc định</span><select class="inp" name="group"><option value="">Bảng giá chung</option><option ${c.group === "NHOM_BUSINESS" ? "selected" : ""}>NHOM_BUSINESS</option></select></label>
+    <label class="f"><span>% điều chỉnh giá (áp khi dùng giá nhóm/chung)</span><input class="inp" name="adjust" value="${esc(c.adjust)}"></label>
+    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="cu-save">Lưu & tính lại giá</button></div></div>`);
+  },
+  "cu-save": () => {
+    const box = $("#f-cu"), c = cust(box.dataset.id), v = (n) => $(`[name=${n}]`, box).value.trim();
+    const adj = v("adjust").replace(",", ".");
+    if (!/^-?\d+(\.\d+)?$/.test(adj) || Number(adj) <= -100) return toast("% điều chỉnh không hợp lệ.", "bad");
+    Object.assign(c, { name: v("name") || c.name, saleId: v("saleId") || null, group: v("group") || null, adjust: adj });
+    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => o.customer === c.code && reprice(S, o, cat) && n++);
+    save(); closeDialog(); render(); toast(`Đã lưu ${c.code}; tính lại giá ${n} đơn chưa khóa.`);
+  },
+  "ro-edit": (el) => {
+    const r = S.routes.find((x) => x.code === el.dataset.id);
+    openDialog(`Sửa tuyến ${r.code}`, `<div class="grid gap-3" id="f-ro" data-id="${esc(r.code)}">
+    <label class="f"><span>Loại hình dịch vụ</span><select class="inp" name="service">${["EPK", "CPN", "CT"].map((s) => `<option ${s === r.service ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+    <fieldset class="card grid gap-2 p-3"><legend class="px-1 text-sm font-medium">Cách tính cân (weight_calc_mode)</legend>
+    <label class="flex items-start gap-2 text-sm"><input type="radio" name="mode" value="MAX_ACTUAL_VOL" ${r.mode === "MAX_ACTUAL_VOL" ? "checked" : ""}><span><b>Lấy max (cân thực, thể tích)</b><br><span class="text-xs muted">So sánh cân thực với D×R×C / DIM</span></span></label>
+    <label class="flex items-start gap-2 text-sm"><input type="radio" name="mode" value="ACTUAL_ONLY" ${r.mode === "ACTUAL_ONLY" ? "checked" : ""}><span><b>Chỉ cân thực</b><br><span class="text-xs muted">Bỏ qua thể tích, không dùng DIM</span></span></label>
+    <label class="f"><span>Hệ số DIM</span><input class="inp" name="dim" value="${esc(r.dim)}"></label></fieldset>
+    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="ro-save">Lưu & tính lại giá</button></div></div>`);
+  },
+  "ro-save": () => {
+    const box = $("#f-ro"), r = S.routes.find((x) => x.code === box.dataset.id);
+    const dim = IX.parseNumberCell($("[name=dim]", box).value.trim(), "price");
+    if (!dim || dim === "0") return toast("Hệ số DIM phải lớn hơn 0.", "bad");
+    Object.assign(r, { service: $("[name=service]", box).value, mode: $("[name=mode]:checked", box).value, dim });
+    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => (o.route === r.code || o.assigned === r.code) && reprice(S, o, cat) && n++);
+    save(); closeDialog(); render(); toast(`Đã lưu ${r.code}; tính lại ${n} đơn chưa khóa giá.`);
+  },
+};
+
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-a]");
+  if (!el || el.disabled) return;
+  const fn = A[el.dataset.a];
+  if (fn) fn(el, e);
+});
+document.addEventListener("change", (e) => {
+  const el = e.target, c = el.dataset.c;
+  if (!c) return;
+  if (c === "role") { S.me = el.value; ui.orders.sel.clear(); ui.rc = null; ui.st = ui.stNew = ui.ver = null; save(); if (location.hash.slice(1) !== current()) location.hash = current(); render(); toast(`Đang dùng vai trò ${P.ROLE_LABEL[me().role]} — ${me().name}.`); }
+  else if (c === "nav") location.hash = el.value;
+  else if (c.startsWith("dash.")) { ui.dash[c.slice(5)] = el.value; render(); }
+  else if (c === "sel") { const id = Number(el.value); el.checked ? ui.orders.sel.add(id) : ui.orders.sel.delete(id); render(); }
+  else if (c === "sel-page") { $$('[data-c="sel"]').forEach((x) => (el.checked ? ui.orders.sel.add(Number(x.value)) : ui.orders.sel.delete(Number(x.value)))); render(); }
+  else if (c === "ver-route") { ui.verRoute = el.value; render(); }
+  else if (c === "ver-kind") { ui.verKind = el.value; render(); }
+  else if (c === "stn-cust") { ui.stNew = { ...ui.stNew, cust: el.value, sel: new Set() }; render(); }
+  else if (c === "stn-from" || c === "stn-to") { ui.stNew[c.slice(4)] = el.value; render(); }
+  else if (c === "stn-sel") { const id = Number(el.value); el.checked ? ui.stNew.sel.add(id) : ui.stNew.sel.delete(id); render(); }
+  else if (c === "stn-all") { const ids = S.orders.filter((o) => o.customer === ui.stNew.cust && o.debt === "Chưa thanh toán" && (!ui.stNew.from || pd(o) >= ui.stNew.from) && (!ui.stNew.to || pd(o) <= ui.stNew.to)).map((o) => o.id); ui.stNew.sel = el.checked ? new Set(ids) : new Set(); render(); }
+  else if (c === "rc-cust") { ui.rc = { cust: el.value, amount: "", alloc: {}, manual: false, proofs: [], done: null }; render(); }
+  else if (c === "rc-file") { addProofs([...el.files]); el.value = ""; }
+});
+document.addEventListener("input", (e) => {
+  const el = e.target, c = el.dataset.c;
+  const row = el.closest('[data-c="bulk-row"]');
+  if (row && el.type !== "checkbox") $("input[type=checkbox]", row).checked = true;
+  if (c === "o-q") { ui.orders.q = el.value; ui.orders.page = 1; const pos = el.selectionStart; render(); const n = $('[data-c="o-q"]'); n.focus(); n.setSelectionRange(pos, pos); }
+  if (c === "rc-amount") {
+    const f = RF.formatThousands(el.value); el.value = f; ui.rc.amount = f; ui.rc.done = null;
+    if (!ui.rc.manual) rcApplySuggestion();
+    rcRefresh();
+  }
+  if (c === "rc-alloc") { const f = RF.formatThousands(el.value); el.value = f; ui.rc.alloc[el.dataset.id] = f; ui.rc.manual = true; rcRefresh(); }
+});
+document.addEventListener("paste", (e) => {
+  if (current() !== "doi-soat" || !ui.rc || !can("receipts.manage")) return;
+  const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+  if (files.length) { e.preventDefault(); addProofs(files); toast("Đã dán ảnh minh chứng."); }
+});
+addEventListener("hashchange", () => { ui.ver = ui.st = ui.stNew = null; render(); });
+render();
+}

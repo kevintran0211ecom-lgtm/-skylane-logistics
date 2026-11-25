@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkyLane — Bản chạy thử</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+/* VOICE: phần mềm ERP vận hành — gọn, rõ số, không trang trí
+   IDEA: sổ cái điều độ vận đơn của một hãng vận chuyển
+   PICTURE: bảng dữ liệu & biểu đồ là trung tâm mỗi màn hình
+   COLOUR: trắng, mực #0f172a, xanh SkyLane #1f3a8a, nhấn #2563eb; đêm #0b1020
+   TYPE: Be Vietnam Pro (dấu tiếng Việt chuẩn); LAYOUT: thanh menu trái, nội dung tối đa 1440px */
+:root{color-scheme:light dark;--bg:light-dark(#f4f6fb,#0b1020);--card:light-dark(#ffffff,#121a2e);--ink:light-dark(#0f172a,#e6eaf3);--muted:light-dark(#64748b,#93a0b8);--line:light-dark(#e2e8f0,#22304d);--brand:light-dark(#1f3a8a,#8fb0ff);--accent:light-dark(#2563eb,#6d9bff);--soft:light-dark(#eef3ff,#18244a);--s1:light-dark(#257de0,#338ced);--s2:light-dark(#f47230,#e76624);--s3:light-dark(#00b894,#00a888)}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Be Vietnam Pro",system-ui,sans-serif;overflow-x:clip}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px}
+.muted{color:var(--muted)}
+.line{border-color:var(--line)}
+.btn{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 14px;border-radius:8px;font-weight:500;background:var(--brand);color:#fff;border:1px solid transparent;cursor:pointer;white-space:nowrap}
+:root[data-theme=dark] .btn,.dark-btn{color:#0b1020}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .btn{color:#0b1020}}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.o{background:transparent;color:var(--ink);border-color:var(--line)}
+.btn.g{background:transparent;color:var(--ink);border-color:transparent}
+.btn.d{background:#dc2626;color:#fff}
+.btn.sm{height:30px;padding:0 10px;font-size:13px}
+.inp{height:36px;width:100%;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit}
+textarea.inp{height:auto;padding:8px 10px}
+.inp:focus,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+label.f{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+label.f>span{font-weight:500}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+table.t th{background:var(--soft);color:var(--muted);font-weight:500;text-align:left;padding:7px 10px;white-space:nowrap;position:sticky;top:0}
+table.t td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:middle}
+table.t tr:hover td{background:color-mix(in srgb,var(--soft) 50%,transparent)}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.scroll{overflow:auto}
+.b{display:inline-flex;align-items:center;border-radius:6px;padding:1px 8px;font-size:12px;font-weight:500;white-space:nowrap}
+.b-muted{background:light-dark(#f1f5f9,#1e293b);color:var(--muted)}.b-info{background:light-dark(#dbeafe,#1e3a8a);color:light-dark(#1e40af,#bfdbfe)}
+.b-ok{background:light-dark(#d1fae5,#064e3b);color:light-dark(#065f46,#a7f3d0)}.b-warn{background:light-dark(#fef3c7,#78350f);color:light-dark(#92400e,#fde68a)}
+.b-bad{background:light-dark(#fee2e2,#7f1d1d);color:light-dark(#991b1b,#fecaca)}
+.nav a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;color:var(--ink);text-decoration:none}
+.nav a:hover{background:var(--soft)}.nav a.on{background:var(--soft);color:var(--brand);font-weight:600}
+dialog{border:1px solid var(--line);border-radius:14px;padding:0;background:var(--card);color:var(--ink);width:min(980px,calc(100% - 24px));max-height:90vh}
+dialog::backdrop{background:rgb(15 23 42/.45)}
+.toast{position:fixed;right:16px;bottom:16px;z-index:60;max-width:420px}
+.fig{position:relative;height:280px}.fig svg{position:absolute;inset:0;width:100%;height:100%}
+.inv{font-family:"Times New Roman",Times,serif;color:#000;background:#fff}
+.inv td,.inv th{border:1px solid #000;padding:3px 6px}
+@media (prefers-reduced-motion:no-preference){.fade{animation:fade .18s ease-out}@keyframes fade{from{opacity:0;transform:translateY(4px)}}}
+@media(max-width:900px){aside.side{display:none}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast"></div>
+<script>
+/*__MODULES__*/
+</script>
+<script>
+const LOGO = "__LOGO__";
+/*__APP__*/
+</script>
+</body>
+</html>
