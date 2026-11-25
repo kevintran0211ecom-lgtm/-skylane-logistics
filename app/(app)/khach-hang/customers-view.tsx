@@ -13,7 +13,7 @@ import { saveCustomer } from "@/lib/catalog/actions";
 import type { CustomerRow } from "@/lib/catalog/queries";
 import { SYNC_SOURCES } from "@/lib/labels";
 
-type Option = { code: string; name: string };
+type Option = { code: string; name: string; adjustPct: string };
 type User = { id: string; fullName: string };
 
 export function CustomersView(props: {
@@ -145,17 +145,17 @@ function CustomerForm({ row, groups, users, onDone }: { row: CustomerRow | null;
 
       <fieldset className="grid gap-4 rounded-lg border p-4 sm:grid-cols-3">
         <legend className="px-1 text-sm font-medium">Giá bán</legend>
-        <Field label="Nhóm giá mặc định" htmlFor="priceGroupCode" error={err.priceGroupCode} hint="Chọn hoặc gõ mã nhóm mới">
-          <Input id="priceGroupCode" name="priceGroupCode" list="price-groups" defaultValue={row?.priceGroupCode ?? ""} placeholder="Bảng giá chung" />
-          <datalist id="price-groups">
+        <Field label="Nhóm giá" htmlFor="priceGroupCode" error={err.priceGroupCode} hint="Quản lý nhóm & % ở mục Nhóm giá">
+          <NativeSelect id="priceGroupCode" name="priceGroupCode" defaultValue={row?.priceGroupCode ?? ""}>
+            <option value="">Bảng giá chung</option>
             {groups.map((g) => (
               <option key={g.code} value={g.code}>
-                {g.name}
+                {g.name} ({g.code}){Number(g.adjustPct) ? ` · ${Number(g.adjustPct) > 0 ? "+" : ""}${Number(g.adjustPct)}%` : ""}
               </option>
             ))}
-          </datalist>
+          </NativeSelect>
         </Field>
-        <Field label="% điều chỉnh giá" htmlFor="priceAdjustPct" error={err.priceAdjustPct} hint="Áp khi dùng giá nhóm/giá chung. VD: -5 = giảm 5%">
+        <Field label="% điều chỉnh giá" htmlFor="priceAdjustPct" error={err.priceAdjustPct} hint="% riêng của khách, áp thêm trên giá nhóm / giá chung. VD: -5 = giảm 5%">
           <Input id="priceAdjustPct" name="priceAdjustPct" inputMode="decimal" defaultValue={row ? Number(row.priceAdjustPct).toString() : "0"} />
         </Field>
         <Field label="Tiền tệ" htmlFor="currency">

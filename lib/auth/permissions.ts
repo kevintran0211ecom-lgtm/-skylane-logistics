@@ -20,8 +20,9 @@ const MATRIX = {
   "dashboard.view": ["ADMIN", "KE_TOAN", "SALE"],
   "orders.view": ["ADMIN", "KE_TOAN", "KHO", "SALE"],
   "orders.viewMoney": ["ADMIN", "KE_TOAN", "SALE"], // giá bán, giá gốc, lợi nhuận
-  "orders.create": ["ADMIN", "KE_TOAN"],
-  "orders.import": ["ADMIN", "KE_TOAN"],
+  // Đơn hàng dự báo: nhận đơn (nhập tay / Excel / Google Sheet), xác nhận → Vận đơn
+  "drafts.view": ["ADMIN", "KE_TOAN", "KHO"],
+  "drafts.manage": ["ADMIN", "KE_TOAN"],
   "orders.bulkEdit": ["ADMIN", "KE_TOAN", "KHO"], // KHO bị giới hạn trường — xem BULK_FIELDS_BY_ROLE
   "orders.editPackages": ["ADMIN", "KE_TOAN", "KHO"], // kích thước & cân từng kiện
   "orders.editLocked": ["ADMIN", "KE_TOAN"], // sửa đơn đã khóa giá
@@ -66,8 +67,10 @@ export const homeFor = (role: Role) => (role === "KHO" ? "/don-hang" : "/dashboa
 /** Menu: đường dẫn → quyền cần có */
 export const ROUTE_PERMISSION: Record<string, Permission> = {
   "/dashboard": "dashboard.view",
+  "/don-du-bao": "drafts.view",
   "/don-hang": "orders.view",
   "/khach-hang": "catalog.view",
+  "/nhom-gia": "catalog.view",
   "/tuyen": "catalog.view",
   "/bang-gia": "pricing.view",
   "/bang-ke": "statements.view",

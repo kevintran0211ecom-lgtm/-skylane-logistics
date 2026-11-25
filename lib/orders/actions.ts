@@ -4,106 +4,17 @@ import { revalidatePath } from "next/cache";
 import { inArray, sql, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { dbErrorMessage } from "@/lib/db/errors";
-import { formToObject, zodFieldErrors, type ActionState } from "@/lib/action-state";
+import { formToObject, type ActionState } from "@/lib/action-state";
 import { orderPackages, orders } from "@/drizzle/schema";
-import { createOrderSchema, packageSchema, parseBulkEdit } from "./schemas";
+import { packageSchema, parseBulkEdit } from "./schemas";
 import { guard } from "@/lib/auth/session";
 import { BULK_FIELDS_BY_ROLE, can } from "@/lib/auth/permissions";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { repriceMessage, repriceOrders, type RepriceReport } from "./reprice";
-import {
-  commitOrderImport,
-  OrderImportError,
-  previewOrderImport,
-  readOrderImportForm,
-  type OrderImportPreview,
-  type OrderImportResult,
-} from "./import-service";
 
 const textArray = (items: string[]): SQL =>
   items.length ? sql`ARRAY[${sql.join(items.map((i) => sql`${i}`), sql`, `)}]::text[]` : sql`'{}'::text[]`;
-
-// =============================================================================
-// Tạo đơn nội bộ (nhiều kiện) → tính giá ngay
-// =============================================================================
-export async function createOrder(_prev: ActionState<RepriceReport>, fd: FormData): Promise<ActionState<RepriceReport>> {
-  const g = await guard("orders.create");
-  if (!g.ok) return g;
-  const parsed = createOrderSchema.safeParse(formToObject(fd));
-  if (!parsed.success) return { ok: false, error: "Vui lòng kiểm tra lại thông tin.", fieldErrors: zodFieldErrors(parsed.error.issues) };
-  const d = parsed.data;
-  try {
-    const report = await db.transaction(async (tx) => {
-      const [o] = await tx
-        .insert(orders)
-        .values({
-          customerCode: d.customerCode,
-          billCode: d.billCode,
-          trackingNumber: d.trackingNumber,
-          source: "MANUAL",
-          routeCode: d.routeCode,
-          assignedRouteCode: d.assignedRouteCode ?? d.routeCode,
-          destinationIso2: d.destinationIso2,
-          shippedAt: d.shippedAt,
-          receiverName: d.receiverName,
-          receiverPhone: d.receiverPhone,
-          receiverEmail: d.receiverEmail?.toLowerCase() ?? null,
-          receiverAddress: d.receiverAddress,
-          receiverCity: d.receiverCity,
-          receiverState: d.receiverState,
-          receiverPostalCode: d.receiverPostalCode,
-          goodsDescription: d.goodsDescription,
-          hsCode: d.hsCode,
-          declaredValueUsd: d.declaredValueUsd?.replace(",", ".") ?? null,
-          note: d.note,
-        })
-        .returning({ id: orders.id });
-      if (d.packages.length) await tx.insert(orderPackages).values(d.packages.map((p, i) => ({ orderId: o.id, seq: i + 1, ...p })));
-      return repriceOrders(tx, [o.id]);
-    });
-    revalidatePath("/don-hang");
-    const warn = report.failed[0]?.message;
-    return { ok: true, message: `Đã tạo đơn ${d.billCode}${warn ? ` — chưa tra được giá: ${warn}` : "."}`, data: report };
-  } catch (e) {
-    return { ok: false, error: dbErrorMessage(e, "Không tạo được đơn.") };
-  }
-}
-
-// =============================================================================
-// Import đơn từ Excel / CSV / Google Sheet — chặn trùng order_key
-// =============================================================================
-const importError = (e: unknown) =>
-  ({ ok: false, error: e instanceof OrderImportError || (e instanceof Error && e.message.startsWith("Không đọc được file")) ? e.message : dbErrorMessage(e, "Không nhập được đơn.") }) as const;
-
-export async function previewOrders(_p: ActionState<OrderImportPreview>, fd: FormData): Promise<ActionState<OrderImportPreview>> {
-  const g = await guard("orders.import");
-  if (!g.ok) return g;
-  try {
-    const { options, file } = readOrderImportForm(fd);
-    return { ok: true, data: await previewOrderImport(options, file) };
-  } catch (e) {
-    return importError(e);
-  }
-}
-
-export async function importOrders(_p: ActionState<OrderImportResult>, fd: FormData): Promise<ActionState<OrderImportResult>> {
-  const g = await guard("orders.import");
-  if (!g.ok) return g;
-  try {
-    const { options, file } = readOrderImportForm(fd);
-    const r = await commitOrderImport(options, file);
-    revalidatePath("/don-hang");
-    const extra = repriceMessage(r.reprice);
-    return {
-      ok: true,
-      message: `Đã nhập ${r.inserted} đơn${r.duplicates ? `, chặn ${r.duplicates} đơn trùng` : ""}${extra ? `; ${extra}` : ""}.`,
-      data: r,
-    };
-  } catch (e) {
-    return importError(e);
-  }
-}
 
 // =============================================================================
 // Sửa đổi hàng loạt — chỉ cập nhật trường được tick, rồi tính lại giá đơn chưa khóa

@@ -49,6 +49,8 @@ export const appUsers = pgTable("app_users", {
 export const priceGroups = pgTable("price_groups", {
   code: text("code").primaryKey(),
   name: text("name").notNull(),
+  /** % so với bảng giá chung — áp khi nhóm không có bảng giá riêng cho tuyến */
+  adjustPct: numeric("adjust_pct", { precision: 6, scale: 2 }).notNull().default("0"),
   note: text("note"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: ts("created_at").notNull().defaultNow(),
@@ -313,6 +315,7 @@ export const receipts = pgTable("receipts", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
   cancelledAt: ts("cancelled_at"),
   cancelledBy: uuid("cancelled_by").references(() => appUsers.id, { onDelete: "set null" }),
+  cancelReason: text("cancel_reason"),
 });
 
 export const receiptAllocations = pgTable("receipt_allocations", {
@@ -327,4 +330,26 @@ export const receiptAllocations = pgTable("receipt_allocations", {
   note: text("note"),
   createdBy: uuid("created_by").references(() => appUsers.id, { onDelete: "set null" }),
   createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+// --- Đơn hàng dự báo (vùng chờ xác nhận) -------------------------------------
+export const draftStatus = pgEnum("draft_status", ["CHO_XAC_NHAN", "DA_XAC_NHAN", "DA_LOAI"]);
+
+export const orderDrafts = pgTable("order_drafts", {
+  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  customerCode: text("customer_code").notNull().references(() => customers.customerCode, { onUpdate: "cascade" }),
+  billCode: text("bill_code").notNull(),
+  orderKey: text("order_key").generatedAlwaysAs(sql`customer_code || '|' || bill_code`).unique(),
+  source: orderSource("source").notNull(),
+  sourceLabel: text("source_label"),
+  /** OrderDraft (lib/orders/import-parse.ts) không gồm `rows` */
+  data: jsonb("data").$type<import("@/lib/orders/import-parse").DraftData>().notNull(),
+  status: draftStatus("status").notNull().default("CHO_XAC_NHAN"),
+  orderId: bigint("order_id", { mode: "number" }).references(() => orders.id, { onDelete: "set null" }),
+  rejectReason: text("reject_reason"),
+  createdBy: uuid("created_by").references(() => appUsers.id, { onDelete: "set null" }),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+  decidedBy: uuid("decided_by").references(() => appUsers.id, { onDelete: "set null" }),
+  decidedAt: ts("decided_at"),
 });

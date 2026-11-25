@@ -1,6 +1,7 @@
 /** Validate form Tạo đơn & Sửa đổi hàng loạt (thuần, không phụ thuộc DB — có unit test) */
 import { z } from "zod";
 import { parseNumberCell } from "../pricing/import-excel";
+import type { DraftData } from "./import-parse";
 
 export const ORDER_STATUSES = ["Phát sinh", "Đã nhận kho", "Đã xuất hàng", "Đã giao hàng", "Hoàn"] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
@@ -82,6 +83,33 @@ export const createOrderSchema = z.object({
     .pipe(z.array(packageSchema).max(500, "Tối đa 500 kiện")),
 });
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
+
+/** Form nhập tay → dữ liệu Đơn hàng dự báo */
+export function draftFromInput(d: CreateOrderInput): DraftData {
+  return {
+    customerCode: d.customerCode,
+    billCode: d.billCode,
+    orderKey: `${d.customerCode}|${d.billCode}`,
+    trackingNumber: d.trackingNumber,
+    routeCode: d.routeCode,
+    assignedRouteCode: d.assignedRouteCode,
+    destinationIso2: d.destinationIso2,
+    createdAt: null,
+    shippedAt: d.shippedAt,
+    receiverName: d.receiverName,
+    receiverAddress: d.receiverAddress,
+    receiverCity: d.receiverCity,
+    receiverState: d.receiverState,
+    receiverPostalCode: d.receiverPostalCode,
+    receiverPhone: d.receiverPhone,
+    receiverEmail: d.receiverEmail?.toLowerCase() ?? null,
+    goodsDescription: d.goodsDescription,
+    hsCode: d.hsCode,
+    declaredValueUsd: d.declaredValueUsd?.replace(",", ".") ?? null,
+    note: d.note,
+    packages: d.packages,
+  };
+}
 
 // =============================================================================
 // Sửa đổi hàng loạt — chỉ cập nhật trường được tick

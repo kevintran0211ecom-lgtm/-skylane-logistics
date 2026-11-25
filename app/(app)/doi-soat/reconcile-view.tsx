@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { startTransition, useActionState, useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardPaste, ImagePlus, Sparkles, Wand2, X } from "lucide-react";
+import { startTransition, useActionState, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardPaste, ImagePlus, Pencil, Sparkles, Undo2, Wand2, X } from "lucide-react";
+import { Dialog } from "@/components/ui/dialog";
+import { ApplyCreditForm, CancelReceiptForm, EditReceiptForm } from "./receipt-dialogs";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NativeSelect, Textarea } from "@/components/ui/form";
 import { Alert, Badge, Card, Table, TBody, TD, TH, THead, TR } from "@/components/ui/misc";
@@ -37,6 +39,13 @@ export function ReconcileView({
   const [alloc, setAlloc] = useState<Record<number, string>>({});
   const [manual, setManual] = useState(false); // người dùng đã sửa tay phân bổ
   const [proofs, setProofs] = useState<Proof[]>([]);
+  const [dlg, setDlg] = useState<{ kind: "edit" | "cancel"; id: number } | { kind: "credit" } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const closeDlg = useCallback((msg?: string) => {
+    setDlg(null);
+    if (msg) setNotice(msg);
+  }, []);
+  const dlgReceipt = dlg && dlg.kind !== "credit" ? debt.history.find((r) => r.id === dlg.id) : undefined;
   const fileRef = useRef<HTMLInputElement>(null);
 
   const amountNum = Number(parseThousands(amount) || 0);
@@ -230,11 +239,27 @@ export function ReconcileView({
 
       {/* ---------------- Cột phải: công nợ & phân bổ ---------------- */}
       <section className="min-w-0 space-y-4">
+        {notice && (
+          <Alert tone="success">
+            <div className="flex items-start justify-between gap-2">
+              <span>{notice}</span>
+              <button type="button" onClick={() => setNotice(null)} aria-label="Đóng thông báo">
+                <X className="size-4" />
+              </button>
+            </div>
+          </Alert>
+        )}
         <div className="grid gap-3 sm:grid-cols-4">
           <Stat label="Tổng bảng kê" value={debt.total} />
           <Stat label="Đã thanh toán" value={debt.paid} tone="text-emerald-700" />
           <Stat label="Còn nợ" value={debt.balance} tone="text-destructive" strong />
-          <Stat label="Thu thừa (số dư có)" value={debt.credit} tone="text-blue-700" />
+          <Stat label="Thu thừa (số dư có)" value={debt.credit} tone="text-blue-700">
+            {canManage && Number(debt.credit) > 0 && debt.open.length > 0 && (
+              <Button size="sm" variant="outline" className="mt-2 w-full" onClick={() => setDlg({ kind: "credit" })}>
+                Dùng cho bảng kê
+              </Button>
+            )}
+          </Stat>
         </div>
 
         {amountNum > 0 && suggestion.mode !== "NONE" && (
@@ -341,12 +366,13 @@ export function ReconcileView({
                 <TH>Phân bổ</TH>
                 <TH className="text-right">Thu thừa</TH>
                 <TH>Minh chứng</TH>
+                {canManage && <TH className="w-20" />}
               </TR>
             </THead>
             <TBody>
               {debt.history.length === 0 && (
                 <TR>
-                  <TD colSpan={6} className="h-16 text-center text-muted-foreground">
+                  <TD colSpan={7} className="h-16 text-center text-muted-foreground">
                     Chưa có phiếu thu.
                   </TD>
                 </TR>
@@ -365,12 +391,32 @@ export function ReconcileView({
                       </a>
                     ))}
                   </TD>
+                  {canManage && (
+                    <TD className="whitespace-nowrap">
+                      <Button variant="ghost" size="icon" onClick={() => setDlg({ kind: "edit", id: r.id })} title="Sửa phiếu thu" aria-label={`Sửa ${r.receiptNo}`}>
+                        <Pencil />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => setDlg({ kind: "cancel", id: r.id })} title="Hủy phiếu thu" aria-label={`Hủy ${r.receiptNo}`}>
+                        <Undo2 />
+                      </Button>
+                    </TD>
+                  )}
                 </TR>
               ))}
             </TBody>
           </Table>
         </div>
       </section>
+
+      <Dialog open={dlg?.kind === "credit"} onOpenChange={(o) => !o && setDlg(null)} title="Dùng tiền Thu thừa cho bảng kê" className="max-w-2xl">
+        {dlg?.kind === "credit" && <ApplyCreditForm customerCode={customer.code} credit={Number(debt.credit)} open={debt.open} onDone={closeDlg} />}
+      </Dialog>
+      <Dialog open={dlg?.kind === "edit"} onOpenChange={(o) => !o && setDlg(null)} title={`Sửa phiếu thu ${dlgReceipt?.receiptNo ?? ""}`} className="max-w-3xl">
+        {dlg?.kind === "edit" && dlgReceipt && <EditReceiptForm key={dlgReceipt.id} receipt={dlgReceipt} open={debt.open} onDone={closeDlg} />}
+      </Dialog>
+      <Dialog open={dlg?.kind === "cancel"} onOpenChange={(o) => !o && setDlg(null)} title={`Hủy phiếu thu ${dlgReceipt?.receiptNo ?? ""}`} className="max-w-lg">
+        {dlg?.kind === "cancel" && dlgReceipt && <CancelReceiptForm key={dlgReceipt.id} receipt={dlgReceipt} onDone={closeDlg} />}
+      </Dialog>
     </div>
   );
 }
@@ -384,11 +430,12 @@ function Row({ label, value, className }: { label: string; value: string; classN
   );
 }
 
-function Stat({ label, value, tone, strong }: { label: string; value: string; tone?: string; strong?: boolean }) {
+function Stat({ label, value, tone, strong, children }: { label: string; value: string; tone?: string; strong?: boolean; children?: React.ReactNode }) {
   return (
     <Card className="p-3">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className={cn("mt-1 font-semibold tabular-nums", strong ? "text-xl" : "text-lg", tone)}>{formatMoney(value)}</p>
+      {children}
     </Card>
   );
 }

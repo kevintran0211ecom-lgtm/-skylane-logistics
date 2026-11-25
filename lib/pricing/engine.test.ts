@@ -285,6 +285,22 @@ describe("Giá bán theo khách hàng", () => {
     const r = calcOrderPricing(order({ priceAdjustPct: 10 }), catalog);
     expect(r.billed).toMatchObject({ scope: "DEFAULT", versionId: "SELL-NOV", amount: "176000" });
   });
+
+  it("nhóm không có bảng giá riêng → giá chung × (1 + %nhóm) × (1 + %KH)", () => {
+    const r = calcOrderPricing(order({ priceGroupCode: "CANHAN", groupAdjustPct: 10, priceAdjustPct: 5 }), catalog);
+    // 160.000 × 1,1 × 1,05 = 184.800
+    expect(r.billed).toMatchObject({ scope: "DEFAULT", amount: "184800", adjustPct: "15.50" });
+  });
+
+  it("nhóm có bảng giá riêng → dùng bảng nhóm, KHÔNG nhân thêm %nhóm", () => {
+    const base = order({ customerCode: "SKL300", priceGroupCode: "VIP", groupAdjustPct: 50, packages: [pkg(0.5)] });
+    expect(calcOrderPricing(base, catalog).billed).toMatchObject({ scope: "GROUP", amount: "99999", adjustPct: "0.00" });
+  });
+
+  it("%nhóm không áp cho khách không có nhóm giá; %nhóm ≤ -100 bị từ chối", () => {
+    expect(calcOrderPricing(order({ groupAdjustPct: 10 }), catalog).billed.amount).toBe("160000");
+    expect(errorCode(() => calcOrderPricing(order({ priceGroupCode: "CANHAN", groupAdjustPct: -100 }), catalog))).toBe("INVALID_INPUT");
+  });
 });
 
 // -----------------------------------------------------------------------------

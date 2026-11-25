@@ -101,7 +101,9 @@ export interface BillWeight {
 export interface OrderPricingInput {
   customerCode: string;
   priceGroupCode?: string | null; // nhóm giá mặc định của KH
-  priceAdjustPct?: Num | null; // % điều chỉnh (áp khi fallback nhóm giá / giá chung)
+  /** % của nhóm giá so với giá chung — áp khi nhóm KHÔNG có bảng giá riêng cho tuyến (dùng giá chung) */
+  groupAdjustPct?: Num | null;
+  priceAdjustPct?: Num | null; // % điều chỉnh riêng của KH (áp khi dùng giá nhóm / giá chung)
   routeCode: string;
   assignedRouteCode?: string | null; // mặc định = routeCode
   destinationIso2: string;
@@ -123,7 +125,7 @@ export interface SideResult {
   currency: Currency;
   versionId: number | string | null;
   scope: PriceScope | null;
-  adjustPct: string; // % đã áp vào giá (0 nếu không áp)
+  adjustPct: string; // % tổng đã áp vào giá (nhóm × khách; 0 nếu không áp)
   weightOverridden: boolean;
   amountOverridden: boolean;
 }
@@ -490,11 +492,21 @@ function calcSide(input: OrderPricingInput, catalog: PricingCatalog, date: strin
     versionId = picked.version.id;
     scope = picked.scope;
     let raw = priceDec(picked.version, input.destinationIso2, weight);
-    // Giá riêng KH dùng nguyên giá; fallback nhóm giá / giá chung nhân (1 + Điều chỉnh %)
+    // Thứ tự ưu tiên giá bán:
+    //   1. Bảng giá riêng KH           → giữ nguyên
+    //   2. Bảng giá riêng nhóm         → × (1 + %KH)
+    //   3. Bảng giá chung              → × (1 + %nhóm) × (1 + %KH)
     if (isSell && scope !== "CUSTOMER") {
-      adjust = dec(input.priceAdjustPct, "Điều chỉnh %");
-      if (adjust <= -100n * S) throw new PricingError("INVALID_INPUT", "Điều chỉnh % phải lớn hơn -100");
-      raw = (raw * (100n * S + adjust)) / (100n * S);
+      const hundred = 100n * S;
+      const pct = (v: Num | null | undefined, label: string) => {
+        const d = dec(v, label);
+        if (d <= -hundred) throw new PricingError("INVALID_INPUT", `${label} phải lớn hơn -100`);
+        return d;
+      };
+      const g = scope === "DEFAULT" && normCode(input.priceGroupCode) ? pct(input.groupAdjustPct, "% nhóm giá") : 0n;
+      const c = pct(input.priceAdjustPct, "Điều chỉnh %");
+      raw = (raw * (hundred + g) * (hundred + c)) / (hundred * hundred);
+      adjust = ((hundred + g) * (hundred + c)) / hundred - hundred; // % tổng, VD 10% & 5% → 15,5%
     }
     amount = roundHalfUp(raw, moneyDigits(currency));
   }

@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-o
 import { db } from "@/lib/db";
 import { customers, orders, statementItems, statements } from "@/drizzle/schema";
 import { formatStatementNo, STATEMENT_PREFIX, statementName } from "./format";
+import { repriceOrders, type RepriceReport } from "@/lib/orders/reprice";
 
 export class StatementError extends Error {}
 
@@ -166,14 +167,15 @@ export async function cancelStatement(id: number, reason: string | null) {
       .where(and(eq(statementItems.statementId, id), eq(statementItems.isActive, true)))
       .returning({ orderId: statementItems.orderId });
 
-    // Hoàn công nợ về "Chưa thanh toán" cho đơn không còn thuộc bảng kê hiệu lực nào khác.
-    // Giá vẫn giữ khóa — Admin/Kế toán mở khóa nếu cần sửa.
+    // Đơn không còn thuộc bảng kê hiệu lực nào khác: công nợ về "Chưa thanh toán",
+    // MỞ KHÓA GIÁ để sửa được và tính lại giá ngay (trừ trường đang ghi đè thủ công).
     const orderIds = items.map((i) => i.orderId);
     let restored = 0;
+    let reprice: RepriceReport = { repriced: 0, locked: 0, failed: [] };
     if (orderIds.length) {
       const res = await tx
         .update(orders)
-        .set({ debtStatus: "Chưa thanh toán" })
+        .set({ debtStatus: "Chưa thanh toán", priceLocked: false, priceLockedAt: null })
         .where(
           and(
             inArray(orders.id, orderIds),
@@ -182,8 +184,9 @@ export async function cancelStatement(id: number, reason: string | null) {
         )
         .returning({ id: orders.id });
       restored = res.length;
+      reprice = await repriceOrders(tx, res.map((r) => r.id));
     }
-    return { statementNo: st.statementNo, restored, total: orderIds.length };
+    return { statementNo: st.statementNo, restored, total: orderIds.length, reprice };
   });
 }
 

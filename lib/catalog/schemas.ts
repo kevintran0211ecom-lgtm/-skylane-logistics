@@ -61,6 +61,18 @@ export const customerSchema = z.object({
   note: optional,
 });
 
+export const priceGroupSchema = z.object({
+  mode: z.enum(["create", "edit"]),
+  code: z.string().transform(normCode).pipe(z.string().min(1, "Nhập mã nhóm giá")),
+  name: z.string().trim().min(1, "Nhập tên nhóm giá"),
+  adjustPct: decimal("% so với giá chung", { allowNegative: true }).refine(
+    (v) => Number(v) > -100 && Number(v) <= 1000,
+    "% phải trong khoảng (-100, 1000]",
+  ),
+  isActive: checkbox,
+  note: optional,
+});
+
 export const routeSchema = z.object({
   mode: z.enum(["create", "edit"]),
   routeCode: z.string().transform(normCode).pipe(z.string().min(1, "Nhập mã tuyến")),

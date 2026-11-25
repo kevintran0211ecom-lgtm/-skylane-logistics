@@ -1,6 +1,6 @@
 import "server-only";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import { customers, orders, receiptAllocations, receipts, statementItems, statements } from "@/drizzle/schema";
 import { formatReceiptNo, RECEIPT_PREFIX } from "./format";
 
@@ -53,6 +53,13 @@ export async function getCustomerDebt(customerCode: string) {
         proofImages: receipts.proofImages,
         allocations: sql<string>`coalesce((select string_agg(s.statement_no || ': ' || ra.amount::bigint, ', ' order by s.issued_at)
           from receipt_allocations ra join statements s on s.id = ra.statement_id where ra.receipt_id = ${receipts.id}), '')`,
+        allocs: sql<{ statementId: number; statementNo: string; amount: string; balance: string }[]>`coalesce((select json_agg(json_build_object(
+            'statementId', s.id, 'statementNo', s.statement_no, 'amount', ra.amount::bigint::text, 'balance', s.balance_amount::bigint::text) order by s.issued_at)
+          from receipt_allocations ra join statements s on s.id = ra.statement_id where ra.receipt_id = ${receipts.id}), '[]')`,
+        method: receipts.method,
+        receivedAccount: receipts.receivedAccount,
+        payerName: receipts.payerName,
+        note: receipts.note,
       })
       .from(receipts)
       .where(and(eq(receipts.customerCode, customerCode), eq(receipts.status, "ACTIVE")))
@@ -93,7 +100,6 @@ export async function saveReceipt(input: SaveReceiptInput) {
   const amount = Number(input.amount);
   if (!Number.isSafeInteger(amount) || amount <= 0) throw new ReceiptError("Số tiền nhận phải lớn hơn 0.");
   const allocs = input.allocations.filter((a) => Number(a.amount) > 0);
-  if (new Set(allocs.map((a) => a.statementId)).size !== allocs.length) throw new ReceiptError("Mỗi bảng kê chỉ phân bổ một lần.");
   const allocTotal = allocs.reduce((t, a) => t + Number(a.amount), 0);
   if (allocTotal > amount) throw new ReceiptError("Tổng phân bổ vượt quá số tiền nhận.");
 
@@ -102,18 +108,8 @@ export async function saveReceipt(input: SaveReceiptInput) {
     if (!cust) throw new ReceiptError(`Không tìm thấy khách hàng ${input.customerCode}.`);
 
     // Khóa các bảng kê được phân bổ & kiểm tra còn nợ
+    await checkAllocations(tx, input.customerCode, allocs);
     const ids = allocs.map((a) => a.statementId);
-    const locked = ids.length
-      ? await tx.select().from(statements).where(inArray(statements.id, ids)).for("update")
-      : [];
-    for (const a of allocs) {
-      const s = locked.find((x) => x.id === a.statementId);
-      if (!s || s.customerCode !== input.customerCode) throw new ReceiptError("Bảng kê không thuộc khách hàng này.");
-      if (s.status !== "ACTIVE") throw new ReceiptError(`Bảng kê ${s.statementNo} đã hủy.`);
-      if (Number(a.amount) > Number(s.balanceAmount)) {
-        throw new ReceiptError(`Phân bổ cho ${s.statementNo} vượt số còn nợ (${Number(s.balanceAmount).toLocaleString("vi-VN")}).`);
-      }
-    }
 
     const day = todaySaigon();
     const counter = await tx.execute<{ last_no: number }>(sql`
@@ -144,35 +140,168 @@ export async function saveReceipt(input: SaveReceiptInput) {
     }
 
     // Trạng thái công nợ bảng kê & đơn hàng theo số đã thu
-    const updated = ids.length
-      ? await tx
-          .select({ id: statements.id, statementNo: statements.statementNo, total: statements.totalAmount, paid: statements.paidAmount })
-          .from(statements)
-          .where(inArray(statements.id, ids))
-      : [];
-    for (const s of updated) {
-      const status = debtOf(Number(s.total), Number(s.paid));
-      await tx.update(statements).set({ debtStatus: status }).where(eq(statements.id, s.id));
-      await tx
-        .update(orders)
-        .set({ debtStatus: status })
-        .where(
-          inArray(
-            orders.id,
-            tx
-              .select({ id: statementItems.orderId })
-              .from(statementItems)
-              .where(and(eq(statementItems.statementId, s.id), eq(statementItems.isActive, true))),
-          ),
-        );
-    }
+    const updated = await syncDebt(tx, ids);
 
     return {
       id: rc.id,
       receiptNo,
       allocated: String(allocTotal),
       overpaid: String(amount - allocTotal),
-      statements: updated.map((s) => ({ statementNo: s.statementNo, status: debtOf(Number(s.total), Number(s.paid)) })),
+      statements: updated,
     };
+  });
+}
+
+// =============================================================================
+// Công nợ bảng kê & đơn theo số đã thu (dùng chung: lập / sửa / hủy phiếu thu, dùng thu thừa)
+// =============================================================================
+async function syncDebt(tx: Tx, statementIds: number[]) {
+  const ids = [...new Set(statementIds)];
+  if (!ids.length) return [];
+  const rows = await tx
+    .select({ id: statements.id, statementNo: statements.statementNo, total: statements.totalAmount, paid: statements.paidAmount, status: statements.status })
+    .from(statements)
+    .where(inArray(statements.id, ids));
+  const out: { statementNo: string; status: string }[] = [];
+  for (const s of rows) {
+    if (s.status !== "ACTIVE") continue;
+    const status = debtOf(Number(s.total), Number(s.paid));
+    await tx.update(statements).set({ debtStatus: status }).where(eq(statements.id, s.id));
+    await tx
+      .update(orders)
+      .set({ debtStatus: status })
+      .where(
+        inArray(
+          orders.id,
+          tx
+            .select({ id: statementItems.orderId })
+            .from(statementItems)
+            .where(and(eq(statementItems.statementId, s.id), eq(statementItems.isActive, true))),
+        ),
+      );
+    out.push({ statementNo: s.statementNo, status });
+  }
+  return out;
+}
+
+/** Kiểm tra phân bổ: cùng khách, bảng kê còn hiệu lực, không vượt số còn nợ (sau khi đã gỡ phân bổ cũ) */
+async function checkAllocations(tx: Tx, customerCode: string, allocs: { statementId: number; amount: string }[]) {
+  if (new Set(allocs.map((a) => a.statementId)).size !== allocs.length) throw new ReceiptError("Mỗi bảng kê chỉ phân bổ một lần.");
+  const ids = allocs.map((a) => a.statementId);
+  const locked = ids.length ? await tx.select().from(statements).where(inArray(statements.id, ids)).for("update") : [];
+  for (const a of allocs) {
+    const s = locked.find((x) => x.id === a.statementId);
+    if (!s || s.customerCode !== customerCode) throw new ReceiptError("Bảng kê không thuộc khách hàng này.");
+    if (s.status !== "ACTIVE") throw new ReceiptError(`Bảng kê ${s.statementNo} đã hủy.`);
+    if (Number(a.amount) > Number(s.balanceAmount)) {
+      throw new ReceiptError(`Phân bổ cho ${s.statementNo} vượt số còn nợ (${Number(s.balanceAmount).toLocaleString("vi-VN")}).`);
+    }
+  }
+}
+
+async function lockReceipt(tx: Tx, id: number) {
+  const [rc] = await tx.select().from(receipts).where(eq(receipts.id, id)).for("update");
+  if (!rc) throw new ReceiptError("Không tìm thấy phiếu thu.");
+  if (rc.status !== "ACTIVE") throw new ReceiptError(`Phiếu thu ${rc.receiptNo} đã hủy.`);
+  const old = await tx.delete(receiptAllocations).where(eq(receiptAllocations.receiptId, id)).returning({ statementId: receiptAllocations.statementId });
+  return { rc, oldStatementIds: old.map((o) => o.statementId) };
+}
+
+// =============================================================================
+// Hủy phiếu thu — gỡ toàn bộ phân bổ, công nợ bảng kê & đơn trở về như trước khi nhận
+// =============================================================================
+export async function cancelReceipt(id: number, reason: string | null, userId: string | null) {
+  return db.transaction(async (tx) => {
+    const { rc, oldStatementIds } = await lockReceipt(tx, id);
+    await tx
+      .update(receipts)
+      .set({ status: "CANCELLED", cancelledAt: sql`now()`, cancelledBy: userId, cancelReason: reason })
+      .where(eq(receipts.id, id));
+    const statementsAfter = await syncDebt(tx, oldStatementIds);
+    return { receiptNo: rc.receiptNo, statements: statementsAfter };
+  });
+}
+
+// =============================================================================
+// Sửa phiếu thu — gỡ phân bổ cũ, cập nhật thông tin, phân bổ lại (1 transaction)
+// =============================================================================
+export interface UpdateReceiptInput {
+  amount: string;
+  receivedAt: string | null;
+  method: "CHUYEN_KHOAN" | "TIEN_MAT" | "KHAC";
+  receivedAccount: string;
+  bankRef: string | null;
+  payerName: string | null;
+  note: string | null;
+  allocations: { statementId: number; amount: string }[];
+}
+
+export async function updateReceipt(id: number, input: UpdateReceiptInput) {
+  const amount = Number(input.amount);
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw new ReceiptError("Số tiền nhận phải lớn hơn 0.");
+  const allocs = input.allocations.filter((a) => Number(a.amount) > 0);
+  if (allocs.reduce((t, a) => t + Number(a.amount), 0) > amount) throw new ReceiptError("Tổng phân bổ vượt quá số tiền nhận.");
+  return db.transaction(async (tx) => {
+    const { rc, oldStatementIds } = await lockReceipt(tx, id);
+    await checkAllocations(tx, rc.customerCode, allocs);
+    await tx
+      .update(receipts)
+      .set({
+        amount: String(amount),
+        ...(input.receivedAt && { receivedAt: input.receivedAt }),
+        method: input.method,
+        receivedAccount: input.receivedAccount,
+        bankRef: input.bankRef,
+        payerName: input.payerName,
+        note: input.note,
+      })
+      .where(eq(receipts.id, id));
+    if (allocs.length) await tx.insert(receiptAllocations).values(allocs.map((a) => ({ receiptId: id, statementId: a.statementId, amount: a.amount })));
+    const statementsAfter = await syncDebt(tx, [...oldStatementIds, ...allocs.map((a) => a.statementId)]);
+    const allocated = allocs.reduce((t, a) => t + Number(a.amount), 0);
+    return { receiptNo: rc.receiptNo, overpaid: String(amount - allocated), statements: statementsAfter };
+  });
+}
+
+// =============================================================================
+// Dùng tiền Thu thừa — Kế toán/Admin phân bổ số dư có vào bảng kê mới (lấy phiếu thu cũ nhất trước)
+// =============================================================================
+export async function applyCredit(customerCode: string, requests: { statementId: number; amount: string }[]) {
+  const allocs = requests.filter((a) => Number(a.amount) > 0);
+  if (!allocs.length) throw new ReceiptError("Nhập số tiền dùng cho ít nhất một bảng kê.");
+  return db.transaction(async (tx) => {
+    await checkAllocations(tx, customerCode, allocs);
+    const credits = await tx
+      .select({ id: receipts.id, receiptNo: receipts.receiptNo, left: receipts.overpaidAmount })
+      .from(receipts)
+      .where(and(eq(receipts.customerCode, customerCode), eq(receipts.status, "ACTIVE"), sql`${receipts.amount} > ${receipts.allocatedAmount}`))
+      .orderBy(asc(receipts.receivedAt), asc(receipts.id))
+      .for("update");
+    const pool = credits.map((c) => ({ ...c, left: Number(c.left) }));
+    const need = allocs.reduce((t, a) => t + Number(a.amount), 0);
+    const have = pool.reduce((t, c) => t + c.left, 0);
+    if (need > have) throw new ReceiptError(`Số dư Thu thừa chỉ còn ${have.toLocaleString("vi-VN")} đ.`);
+
+    const used: string[] = [];
+    for (const a of allocs) {
+      let rest = Number(a.amount);
+      for (const c of pool) {
+        if (rest <= 0) break;
+        if (c.left <= 0) continue;
+        const take = Math.min(rest, c.left);
+        await tx
+          .insert(receiptAllocations)
+          .values({ receiptId: c.id, statementId: a.statementId, amount: String(take), note: "Dùng tiền Thu thừa" })
+          .onConflictDoUpdate({
+            target: [receiptAllocations.receiptId, receiptAllocations.statementId],
+            set: { amount: sql`${receiptAllocations.amount} + excluded.amount` },
+          });
+        c.left -= take;
+        rest -= take;
+        if (!used.includes(c.receiptNo)) used.push(c.receiptNo);
+      }
+    }
+    const statementsAfter = await syncDebt(tx, allocs.map((a) => a.statementId));
+    return { used: need, fromReceipts: used, creditLeft: have - need, statements: statementsAfter };
   });
 }

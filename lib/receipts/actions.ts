@@ -6,7 +6,7 @@ import { dbErrorMessage } from "@/lib/db/errors";
 import type { ActionState } from "@/lib/action-state";
 import { deleteProofs, uploadProof } from "@/lib/storage";
 import { DEFAULT_RECEIVED_ACCOUNT, parseThousands } from "./format";
-import { ReceiptError, saveReceipt, todaySaigon } from "./service";
+import { applyCredit, cancelReceipt, ReceiptError, saveReceipt, todaySaigon, updateReceipt } from "./service";
 import { guard } from "@/lib/auth/session";
 
 const MAX_IMAGES = 5;
@@ -85,5 +85,82 @@ export async function saveReceiptAction(_p: ActionState<SaveReceiptResult>, fd: 
   } catch (e) {
     await deleteProofs(uploaded);
     return { ok: false, error: e instanceof ReceiptError ? e.message : dbErrorMessage(e, "Không lưu được phiếu thu.") };
+  }
+}
+
+// =============================================================================
+// Hủy / Sửa phiếu thu, Dùng tiền Thu thừa (Admin & Kế toán)
+// =============================================================================
+const refresh = () => {
+  revalidatePath("/doi-soat");
+  revalidatePath("/bang-ke");
+  revalidatePath("/don-hang");
+};
+const fail = (e: unknown, fallback: string) => ({ ok: false, error: e instanceof ReceiptError ? e.message : dbErrorMessage(e, fallback) }) as const;
+const statusList = (xs: { statementNo: string; status: string }[]) => (xs.length ? ` (${xs.map((x) => `${x.statementNo} → ${x.status}`).join("; ")})` : "");
+
+function readAllocations(fd: FormData): { statementId: number; amount: string }[] | null {
+  try {
+    const raw = JSON.parse(String(fd.get("allocations") ?? "[]")) as { statementId: unknown; amount: unknown }[];
+    return raw.map((a) => ({ statementId: Number(a.statementId), amount: parseThousands(String(a.amount)) })).filter((a) => a.statementId > 0 && Number(a.amount) > 0);
+  } catch {
+    return null;
+  }
+}
+
+export async function cancelReceiptAction(id: number, _p: ActionState, fd: FormData): Promise<ActionState> {
+  const g = await guard("receipts.manage");
+  if (!g.ok) return g;
+  try {
+    const r = await cancelReceipt(id, String(fd.get("reason") ?? "").trim() || null, g.user.id);
+    refresh();
+    return { ok: true, message: `Đã hủy phiếu thu ${r.receiptNo}; công nợ trả về như trước khi nhận${statusList(r.statements)}.` };
+  } catch (e) {
+    return fail(e, "Không hủy được phiếu thu.");
+  }
+}
+
+export async function updateReceiptAction(id: number, _p: ActionState, fd: FormData): Promise<ActionState> {
+  const g = await guard("receipts.manage");
+  if (!g.ok) return g;
+  const amount = parseThousands(String(fd.get("amount") ?? ""));
+  if (!amount || Number(amount) <= 0) return { ok: false, error: "Nhập số tiền nhận." };
+  const allocations = readAllocations(fd);
+  if (!allocations) return { ok: false, error: "Dữ liệu phân bổ không hợp lệ." };
+  const receivedRaw = String(fd.get("receivedAt") ?? "").trim();
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/.exec(receivedRaw);
+  try {
+    const r = await updateReceipt(id, {
+      amount,
+      receivedAt: m ? `${m[1]}T${m[2]}:00+07:00` : null,
+      method: (["CHUYEN_KHOAN", "TIEN_MAT", "KHAC"] as const).find((x) => x === fd.get("method")) ?? "CHUYEN_KHOAN",
+      receivedAccount: String(fd.get("receivedAccount") ?? "").trim() || DEFAULT_RECEIVED_ACCOUNT,
+      bankRef: String(fd.get("bankRef") ?? "").trim() || null,
+      payerName: String(fd.get("payerName") ?? "").trim() || null,
+      note: String(fd.get("note") ?? "").trim() || null,
+      allocations,
+    });
+    refresh();
+    const over = Number(r.overpaid);
+    return { ok: true, message: `Đã sửa phiếu thu ${r.receiptNo}${over > 0 ? `; Thu thừa ${over.toLocaleString("vi-VN")} đ` : ""}${statusList(r.statements)}.` };
+  } catch (e) {
+    return fail(e, "Không sửa được phiếu thu.");
+  }
+}
+
+export async function applyCreditAction(customerCode: string, _p: ActionState, fd: FormData): Promise<ActionState> {
+  const g = await guard("receipts.manage");
+  if (!g.ok) return g;
+  const allocations = readAllocations(fd);
+  if (!allocations) return { ok: false, error: "Dữ liệu phân bổ không hợp lệ." };
+  try {
+    const r = await applyCredit(customerCode, allocations);
+    refresh();
+    return {
+      ok: true,
+      message: `Đã dùng ${r.used.toLocaleString("vi-VN")} đ tiền Thu thừa (từ ${r.fromReceipts.join(", ")})${statusList(r.statements)}. Còn lại ${r.creditLeft.toLocaleString("vi-VN")} đ.`,
+    };
+  } catch (e) {
+    return fail(e, "Không dùng được tiền Thu thừa.");
   }
 }

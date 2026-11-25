@@ -60,7 +60,29 @@ export const listSuppliers = () =>
   db.select({ code: suppliers.supplierCode, name: suppliers.name }).from(suppliers).orderBy(asc(suppliers.supplierCode));
 
 export const listPriceGroups = () =>
-  db.select({ code: priceGroups.code, name: priceGroups.name }).from(priceGroups).orderBy(asc(priceGroups.code));
+  db
+    .select({ code: priceGroups.code, name: priceGroups.name, adjustPct: priceGroups.adjustPct })
+    .from(priceGroups)
+    .where(eq(priceGroups.isActive, true))
+    .orderBy(asc(priceGroups.code));
+
+/** Trang Nhóm giá: % so với giá chung, số khách, số tuyến có bảng giá riêng đang áp dụng */
+export const listPriceGroupsDetail = () =>
+  db
+    .select({
+      code: priceGroups.code,
+      name: priceGroups.name,
+      adjustPct: priceGroups.adjustPct,
+      isActive: priceGroups.isActive,
+      note: priceGroups.note,
+      customerCount: sql<number>`(select count(*)::int from customers c where c.price_group_code = ${priceGroups.code})`,
+      ownRoutes: sql<string[]>`coalesce((select array_agg(distinct v.route_code order by v.route_code) from pricing_versions v
+        where v.price_group_code = ${priceGroups.code} and v.price_kind = 'SELL' and v.status = 'ACTIVE'
+          and (v.effective_to is null or v.effective_to >= (now() at time zone 'Asia/Saigon')::date)), '{}')`,
+    })
+    .from(priceGroups)
+    .orderBy(asc(priceGroups.code));
+export type PriceGroupRow = Awaited<ReturnType<typeof listPriceGroupsDetail>>[number];
 
 export const listSaleUsers = () =>
   db

@@ -184,6 +184,9 @@ export interface OrderDraft {
   packages: PackageDraft[];
 }
 
+/** Dữ liệu 1 đơn lưu trong Đơn hàng dự báo (order_drafts.data) */
+export type DraftData = Omit<OrderDraft, "rows">;
+
 export interface OrderParseResult {
   drafts: OrderDraft[];
   errors: { row: number; billCode?: string; message: string }[];

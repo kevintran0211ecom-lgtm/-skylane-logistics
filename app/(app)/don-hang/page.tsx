@@ -1,5 +1,6 @@
 import { PageHeader } from "@/components/ui/misc";
-import { listActiveRoutes, listOrderCustomers, listOrders } from "@/lib/orders/queries";
+import { listActiveRoutes, listOrders } from "@/lib/orders/queries";
+import { countPendingDrafts } from "@/lib/orders/drafts-service";
 import { ORDER_STATUSES, type OrderStatus } from "@/lib/orders/schemas";
 import { OrdersView } from "./orders-view";
 import { requirePage } from "@/lib/auth/session";
@@ -13,18 +14,17 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   const sp = await searchParams;
   const page = Math.max(1, Number(sp.page) || 1);
   const status = (ORDER_STATUSES as readonly string[]).includes(sp.status ?? "") ? (sp.status as OrderStatus) : undefined;
-  const [{ rows, total, counts }, routes, customers] = await Promise.all([
+  const [{ rows, total, counts }, routes, pendingDrafts] = await Promise.all([
     listOrders({ q: sp.q, status, page, pageSize: PAGE_SIZE, saleUserId: user.saleScope }),
     listActiveRoutes(),
-    listOrderCustomers(user.saleScope),
+    can(user.role, "drafts.view") ? countPendingDrafts() : 0,
   ]);
   // Kho: loại bỏ tiền ngay ở server — không gửi xuống trình duyệt
   const showMoney = can(user.role, "orders.viewMoney");
   const safeRows = showMoney ? rows : rows.map((r) => ({ ...r, sellAmount: "", costAmount: "", profit: "" }));
   const perms = {
     showMoney,
-    create: can(user.role, "orders.create"),
-    import: can(user.role, "orders.import"),
+    drafts: can(user.role, "drafts.view"),
     bulkFields: [...BULK_FIELDS_BY_ROLE[user.role]],
     editPackages: can(user.role, "orders.editPackages"),
     editLocked: can(user.role, "orders.editLocked"),
@@ -42,7 +42,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
         q={sp.q ?? ""}
         status={status}
         routes={routes}
-        customers={customers.map((c) => ({ code: c.code, name: c.name, hasSync: !!c.syncConfig?.url }))}
+        pendingDrafts={pendingDrafts}
       />
     </>
   );

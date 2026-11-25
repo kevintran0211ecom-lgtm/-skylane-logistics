@@ -90,3 +90,22 @@ describe("Đọc đơn từ sheet nguồn khách", () => {
     expect(parseOrderSheet([["Mã vận đơn", "Điểm đến"], ["X", "US"]]).errors[0].message).toContain('"Tuyến vận chuyển"');
   });
 });
+
+describe("Mẫu file Excel nhập đơn (tab DON — SKL116)", () => {
+  it("nhận đủ cột của mẫu, chỉ bỏ qua STT", async () => {
+    const { ORDER_TEMPLATE_HEADERS, ORDER_TEMPLATE_SAMPLE } = await import("./template");
+    const r = parseOrderSheet([[...ORDER_TEMPLATE_HEADERS], ORDER_TEMPLATE_SAMPLE], { defaultCustomerCode: "skl116" });
+    expect(r.errors).toEqual([]);
+    expect(r.ignoredColumns).toEqual(["STT"]);
+    expect(r.drafts[0]).toMatchObject({
+      orderKey: "SKL116|#AP1376",
+      routeCode: "VNFZZXR",
+      destinationIso2: "US",
+      receiverName: "David Lee",
+      receiverPostalCode: "68322",
+      hsCode: null,
+      createdAt: "2026-11-18T15:19:43+07:00",
+      packages: [{ lengthCm: "34", widthCm: "23", heightCm: "11", actualWeight: "0.786" }],
+    });
+  });
+});

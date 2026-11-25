@@ -1,20 +1,28 @@
 "use client";
 
 import { useActionState, useEffect, useState } from "react";
-import { CheckCircle2, Eye, Upload } from "lucide-react";
+import { CheckCircle2, Download, Eye, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NativeSelect } from "@/components/ui/form";
 import { Alert, Badge, Table, TBody, TD, TH, THead, TR } from "@/components/ui/misc";
-import { importOrders, previewOrders } from "@/lib/orders/actions";
+import { importOrders, previewOrders } from "@/lib/orders/draft-actions";
 import { submitWithoutReset } from "@/lib/form-submit";
 import { formatKg } from "@/lib/labels";
-import type { CustomerOption } from "./orders-view";
+import type { CustomerOption } from "../don-hang/orders-view";
 
-export function ImportOrdersForm({ customers, onDone }: { customers: CustomerOption[]; onDone: () => void }) {
+export function ImportOrdersForm({
+  customers,
+  initialSource = "FILE",
+  onDone,
+}: {
+  customers: CustomerOption[];
+  initialSource?: "FILE" | "SHEET";
+  onDone: () => void;
+}) {
   const [preview, previewAction, previewing] = useActionState(previewOrders, null);
   const [commit, commitAction, committing] = useActionState(importOrders, null);
-  const [source, setSource] = useState<"FILE" | "SHEET">("FILE");
-  const [customer, setCustomer] = useState("");
+  const [source, setSource] = useState<"FILE" | "SHEET">(initialSource);
+  const [customer, setCustomer] = useState(initialSource === "SHEET" ? (customers.find((c) => c.hasSync)?.code ?? "") : "");
   const [stale, setStale] = useState(true);
   useEffect(() => {
     if (preview) setStale(false);
@@ -28,17 +36,6 @@ export function ImportOrdersForm({ customers, onDone }: { customers: CustomerOpt
             <CheckCircle2 className="size-4" /> {commit.message}
           </span>
         </Alert>
-        {commit.data && commit.data.reprice.failed.length > 0 && (
-          <Alert tone="warning" title="Đơn chưa tra được giá (đã lưu, giữ tiền 0 — kiểm tra bảng giá):">
-            <ul className="mt-1 list-disc pl-5 text-xs">
-              {commit.data.reprice.failed.slice(0, 20).map((f) => (
-                <li key={f.billCode}>
-                  {f.billCode}: {f.message}
-                </li>
-              ))}
-            </ul>
-          </Alert>
-        )}
         <div className="flex justify-end">
           <Button onClick={onDone}>Đóng</Button>
         </div>
@@ -58,8 +55,8 @@ export function ImportOrdersForm({ customers, onDone }: { customers: CustomerOpt
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="Nguồn dữ liệu" htmlFor="source">
           <NativeSelect id="source" name="source" value={source} onChange={(e) => setSource(e.target.value as "FILE" | "SHEET")}>
-            <option value="FILE">File Excel / CSV</option>
-            <option value="SHEET">Google Sheet</option>
+            <option value="FILE">File Excel (mẫu SKL116) / CSV</option>
+            <option value="SHEET">Google Sheet của khách</option>
           </NativeSelect>
         </Field>
         <Field label="Khách hàng mặc định" htmlFor="customerCode" hint="Dùng khi file không có cột Mã khách hàng">
@@ -98,18 +95,23 @@ export function ImportOrdersForm({ customers, onDone }: { customers: CustomerOpt
         )}
       </div>
 
-      <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-        Cột nhận theo tên tiêu đề (không phân biệt dấu, thứ tự): Mã vận đơn, Mã khách hàng, Tuyến vận chuyển, Tuyến chỉ định, Điểm đến, Tracking, Thời gian phát sinh,
-        Ngày gửi hàng, Người nhận, Địa chỉ, Thành phố, Bang/tỉnh, Mã bưu chính, SĐT, Email, Tên hàng, Mã HS, Giá trị khai báo, Số kiện, Trọng lượng thực tế, Dài, Rộng, Cao, Ghi chú.
-        Không có cột Số kiện: nhiều dòng cùng mã vận đơn = nhiều kiện.
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-3 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+        <p className="max-w-3xl">
+          Dùng đúng mẫu cột tab <b>DON</b> (file SKL116): Thời gian phát sinh đơn, Mã vận đơn, Tuyến vận chuyển, Giá trị khai báo, Tên hàng, Mã HS, Người nhận, Địa chỉ,
+          Thành phố, Bang/tỉnh, Mã bưu chính, SĐT, Mail, Điểm đến, Số kiện, Trọng lượng thực tế, Dài, Rộng, Cao. Cột nhận theo tên tiêu đề, không phân biệt thứ tự. Đơn
+          hợp lệ vào <b>Đơn hàng dự báo</b> chờ xác nhận.
+        </p>
+        <a href="/api/don-du-bao/mau-xlsx" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+          <Download className="size-3.5" /> Tải file mẫu
+        </a>
+      </div>
 
       <div className="flex flex-wrap gap-2">
         <Button type="submit" name="intent" value="preview" variant="outline" disabled={previewing || committing}>
           <Eye /> {previewing ? "Đang đọc…" : "Kiểm tra dữ liệu"}
         </Button>
         <Button type="submit" name="intent" value="commit" disabled={!data?.canCommit || stale || committing || previewing}>
-          <Upload /> {committing ? "Đang nhập & tính giá…" : data ? `Nhập ${data.newCount} đơn mới` : "Nhập đơn"}
+          <Upload /> {committing ? "Đang đưa vào…" : data ? `Đưa ${data.newCount} đơn vào chờ xác nhận` : "Đưa vào chờ xác nhận"}
         </Button>
       </div>
       {preview && !preview.ok && <Alert tone="danger">{preview.error}</Alert>}
@@ -121,7 +123,7 @@ export function ImportOrdersForm({ customers, onDone }: { customers: CustomerOpt
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="font-medium">{data.sourceLabel}</span>
             <Badge tone="success">{data.newCount} đơn mới · {data.packageCount} kiện</Badge>
-            {data.duplicatesDb.length > 0 && <Badge tone="warning">{data.duplicatesDb.length} trùng trong hệ thống</Badge>}
+            {data.duplicatesDb.length > 0 && <Badge tone="warning">{data.duplicatesDb.length} đã có (Vận đơn / Đơn dự báo)</Badge>}
             {data.duplicatesFile.length > 0 && <Badge tone="warning">{data.duplicatesFile.length} trùng trong file</Badge>}
             {data.errors.length > 0 && <Badge tone="danger">{data.errors.length} dòng lỗi</Badge>}
           </div>

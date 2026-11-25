@@ -6,6 +6,7 @@ import type { ActionState } from "@/lib/action-state";
 import { isIsoDate } from "@/lib/pricing/versioning";
 import { cancelStatement, createStatement, StatementError } from "./service";
 import { guard } from "@/lib/auth/session";
+import { repriceMessage } from "@/lib/orders/reprice";
 
 const fail = (e: unknown, fallback: string) =>
   ({ ok: false, error: e instanceof StatementError ? e.message : dbErrorMessage(e, fallback) }) as const;
@@ -50,7 +51,11 @@ export async function cancelStatementAction(id: number, _p: ActionState, fd: For
     revalidatePath("/bang-ke");
     revalidatePath(`/bang-ke/${id}`);
     revalidatePath("/don-hang");
-    return { ok: true, message: `Đã hủy ${r.statementNo}; hoàn "Chưa thanh toán" cho ${r.restored}/${r.total} đơn.` };
+    const extra = repriceMessage(r.reprice);
+    return {
+      ok: true,
+      message: `Đã hủy ${r.statementNo}; ${r.restored}/${r.total} đơn về "Chưa thanh toán" và được mở khóa giá${extra ? ` (${extra})` : ""}.`,
+    };
   } catch (e) {
     return fail(e, "Không hủy được bảng kê.");
   }

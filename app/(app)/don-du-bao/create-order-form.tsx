@@ -5,15 +5,15 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, Input, NativeSelect, Textarea } from "@/components/ui/form";
 import { Alert } from "@/components/ui/misc";
-import { createOrder } from "@/lib/orders/actions";
+import { createDraft } from "@/lib/orders/draft-actions";
 import { submitWithoutReset } from "@/lib/form-submit";
-import type { CustomerOption, RouteOption } from "./orders-view";
+import type { CustomerOption, RouteOption } from "../don-hang/orders-view";
 
 type Pkg = { lengthCm: string; widthCm: string; heightCm: string; actualWeight: string };
 const emptyPkg = (): Pkg => ({ lengthCm: "", widthCm: "", heightCm: "", actualWeight: "" });
 
 export function CreateOrderForm({ routes, customers, onDone }: { routes: RouteOption[]; customers: CustomerOption[]; onDone: () => void }) {
-  const [state, action, pending] = useActionState(createOrder, null);
+  const [state, action, pending] = useActionState(createDraft, null);
   const [packages, setPackages] = useState<Pkg[]>([emptyPkg()]);
   const [route, setRoute] = useState("");
   useEffect(() => {
@@ -161,7 +161,7 @@ export function CreateOrderForm({ routes, customers, onDone }: { routes: RouteOp
           Hủy
         </Button>
         <Button type="submit" disabled={pending}>
-          {pending ? "Đang tạo & tính giá…" : "Tạo đơn"}
+          {pending ? "Đang lưu…" : "Thêm vào chờ xác nhận"}
         </Button>
       </div>
     </form>

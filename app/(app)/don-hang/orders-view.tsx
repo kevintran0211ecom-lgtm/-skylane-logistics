@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { ColumnDef, RowSelectionState } from "@tanstack/react-table";
-import { Boxes, FilePlus2, Lock, PencilLine, Search, Upload, X } from "lucide-react";
+import { Boxes, Inbox, Lock, PencilLine, Search, X } from "lucide-react";
 import { DataTable } from "@/components/data-table";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/form";
 import { Badge } from "@/components/ui/misc";
@@ -14,8 +14,6 @@ import { ORDER_STATUSES, type OrderStatus } from "@/lib/orders/schemas";
 import { viDate } from "@/lib/pricing/versioning";
 import { formatKg } from "@/lib/labels";
 import { cn, formatMoney } from "@/lib/utils";
-import { CreateOrderForm } from "./create-order-form";
-import { ImportOrdersForm } from "./import-orders-form";
 import { BulkEditForm } from "./bulk-edit-form";
 import { PackagesForm } from "./packages-form";
 import type { BulkField } from "@/lib/orders/schemas";
@@ -49,12 +47,12 @@ export function OrdersView(props: {
   q: string;
   status?: OrderStatus;
   routes: RouteOption[];
-  customers: CustomerOption[];
-  perms: { showMoney: boolean; create: boolean; import: boolean; bulkFields: BulkField[]; editPackages: boolean; editLocked: boolean };
+  perms: { showMoney: boolean; drafts: boolean; bulkFields: BulkField[]; editPackages: boolean; editLocked: boolean };
+  pendingDrafts: number;
 }) {
   const { perms } = props;
   const [selected, setSelected] = useState<RowSelectionState>({});
-  const [dialog, setDialog] = useState<"create" | "import" | "bulk" | null>(null);
+  const [dialog, setDialog] = useState<"bulk" | null>(null);
   const [packagesOf, setPackagesOf] = useState<OrderRow | null>(null);
   const canBulk = perms.bulkFields.length > 0;
   const selectedIds = Object.keys(selected).filter((k) => selected[k]);
@@ -197,15 +195,13 @@ export function OrdersView(props: {
               <PencilLine /> Sửa đổi hàng loạt
             </Button>
           )}
-          {perms.import && (
-            <Button variant="outline" onClick={() => setDialog("import")}>
-              <Upload /> Import đơn
-            </Button>
-          )}
-          {perms.create && (
-            <Button onClick={() => setDialog("create")}>
-              <FilePlus2 /> Tạo đơn
-            </Button>
+          {perms.drafts && (
+            <Link href="/don-du-bao" className={buttonVariants({ variant: "outline" })}>
+              <Inbox /> Nhận đơn mới
+              {props.pendingDrafts > 0 && (
+                <span className="rounded-full bg-primary px-1.5 text-xs text-primary-foreground tabular-nums">{props.pendingDrafts.toLocaleString("vi-VN")}</span>
+              )}
+            </Link>
           )}
         </div>
       </div>
@@ -216,23 +212,11 @@ export function OrdersView(props: {
         total={props.total}
         page={props.page}
         pageSize={props.pageSize}
-        empty={props.q || props.status ? "Không có vận đơn phù hợp." : "Chưa có vận đơn. Bấm “Tạo đơn” hoặc “Import đơn”."}
+        empty={props.q || props.status ? "Không có vận đơn phù hợp." : "Chưa có vận đơn. Đơn mới được nhận & xác nhận ở mục Đơn hàng dự báo."}
         selection={canBulk ? { getRowId: (r) => String(r.id), selected, onChange: setSelected } : undefined}
       />
       <p className="mt-2 text-xs text-muted-foreground">* Giá trị đang ghi đè thủ công (không tự tính lại). Biểu tượng khóa = đơn đã khóa giá.</p>
 
-      <Dialog open={dialog === "create"} onOpenChange={(o) => !o && setDialog(null)} title="Tạo vận đơn nội bộ" className="max-w-3xl">
-        <CreateOrderForm routes={props.routes} customers={props.customers} onDone={() => setDialog(null)} />
-      </Dialog>
-      <Dialog
-        open={dialog === "import"}
-        onOpenChange={(o) => !o && setDialog(null)}
-        title="Import vận đơn"
-        description="Từ Excel/CSV hoặc Google Sheet. Cột được nhận theo tên tiêu đề; đơn trùng order_key (Mã KH|Mã vận đơn) tự động bị chặn."
-        className="max-w-4xl"
-      >
-        <ImportOrdersForm customers={props.customers} onDone={() => setDialog(null)} />
-      </Dialog>
       <Dialog
         open={dialog === "bulk"}
         onOpenChange={(o) => !o && setDialog(null)}

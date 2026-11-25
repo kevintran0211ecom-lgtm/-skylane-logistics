@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { customerSchema, routeSchema } from "./schemas";
+import { customerSchema, priceGroupSchema, routeSchema } from "./schemas";
 
 const baseCustomer = { mode: "create", customerCode: " skl116 ", name: "Chị Thanh", currency: "VND", syncSourceType: "NONE", isActive: "on" };
 const baseRoute = { mode: "create", routeCode: "ups han s5500 ", name: "UPS HAN S5500", serviceType: "CPN", weightCalcMode: "ACTUAL_ONLY", dimDivisor: "5.500" };
@@ -38,5 +38,15 @@ describe("Form Tuyến", () => {
     const r = routeSchema.safeParse({ ...baseRoute, weightCalcMode: "VOLUME" });
     expect(r.success).toBe(false);
     if (!r.success) expect(r.error.issues[0].message).toBe("Chọn cách tính cân");
+  });
+});
+
+describe("Nhóm giá", () => {
+  it("chuẩn hóa mã, nhận % âm/dương, chặn % ≤ -100", () => {
+    const ok = priceGroupSchema.safeParse({ mode: "create", code: " ca nhan ", name: "Cá nhân", adjustPct: "12,5", isActive: "on" });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data).toMatchObject({ code: "CA NHAN", adjustPct: "12.5", isActive: true, note: null });
+    const bad = priceGroupSchema.safeParse({ mode: "create", code: "X", name: "X", adjustPct: "-100" });
+    expect(bad.success).toBe(false);
   });
 });

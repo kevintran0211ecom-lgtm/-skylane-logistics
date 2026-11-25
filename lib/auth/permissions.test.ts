@@ -17,7 +17,7 @@ describe("Phân quyền 4 vai trò", () => {
   });
   it("Sale: chỉ xem đơn, báo giá, công nợ của khách mình — không sửa gì", () => {
     expect(can("SALE", "orders.view") && can("SALE", "quote.view") && can("SALE", "receipts.view")).toBe(true);
-    for (const p of ["orders.create", "orders.bulkEdit", "orders.editPackages", "statements.manage", "receipts.manage", "catalog.view"] as const) expect(can("SALE", p)).toBe(false);
+    for (const p of ["drafts.manage", "drafts.view", "orders.bulkEdit", "orders.editPackages", "statements.manage", "receipts.manage", "catalog.view"] as const) expect(can("SALE", p)).toBe(false);
     expect(isScopedToOwnCustomers("SALE")).toBe(true);
     expect(isScopedToOwnCustomers("KE_TOAN")).toBe(false);
   });

@@ -1,7 +1,7 @@
 import "server-only";
 import { inArray, sql, type SQL } from "drizzle-orm";
 import type { Tx } from "@/lib/db";
-import { customers, orderPackages, orders } from "@/drizzle/schema";
+import { customers, orderPackages, orders, priceGroups } from "@/drizzle/schema";
 import { calcOrderPricing, PricingError, type OverrideField, type OrderPricingResult } from "@/lib/pricing/engine";
 import { loadPricingCatalog } from "@/lib/pricing/catalog";
 
@@ -44,9 +44,11 @@ export async function repriceOrders(tx: Tx, orderIds: number[]): Promise<Reprice
       costAmount: orders.costAmount,
       priceGroupCode: customers.priceGroupCode,
       priceAdjustPct: customers.priceAdjustPct,
+      groupAdjustPct: priceGroups.adjustPct,
     })
     .from(orders)
     .innerJoin(customers, sql`${customers.customerCode} = ${orders.customerCode}`)
+    .leftJoin(priceGroups, sql`${priceGroups.code} = ${customers.priceGroupCode}`)
     .where(inArray(orders.id, orderIds))
     .for("update", { of: orders });
 
@@ -84,6 +86,7 @@ export async function repriceOrders(tx: Tx, orderIds: number[]): Promise<Reprice
       customerCode: o.customerCode,
       priceGroupCode: o.priceGroupCode,
       priceAdjustPct: o.priceAdjustPct,
+      groupAdjustPct: o.groupAdjustPct,
       routeCode: o.routeCode,
       assignedRouteCode: o.assignedRouteCode,
       destinationIso2: o.destinationIso2,
@@ -164,4 +167,14 @@ export function repriceMessage(r: RepriceReport): string {
   if (r.locked) parts.push(`${r.locked} đơn đã khóa giá giữ nguyên`);
   if (r.failed.length) parts.push(`${r.failed.length} đơn chưa tra được giá`);
   return parts.join(", ");
+}
+
+/** Tính lại giá mọi đơn CHƯA khóa giá của các khách hàng (khi đổi nhóm giá / % điều chỉnh) */
+export async function repriceOpenOrdersOfCustomers(tx: Tx, customerCodes: string[]): Promise<RepriceReport> {
+  if (!customerCodes.length) return { repriced: 0, locked: 0, failed: [] };
+  const ids = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(sql`${orders.priceLocked} = false and ${inArray(orders.customerCode, customerCodes)}`);
+  return repriceOrders(tx, ids.map((r) => r.id));
 }

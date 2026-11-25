@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpenText, FileSpreadsheet, LayoutDashboard, LogOut, Package, Receipt, Route, Scale, ShieldCheck, Users } from "lucide-react";
+import { BookOpenText, FileSpreadsheet, Inbox, LayoutDashboard, LogOut, Package, Receipt, Route, Scale, ShieldCheck, Tags, Users } from "lucide-react";
 import { signOut } from "@/lib/auth/actions";
 import { can, ROLE_LABEL, ROUTE_PERMISSION, type Role } from "@/lib/auth/permissions";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,7 @@ const NAV = [
     group: "Vận hành",
     items: [
       { href: "/dashboard", label: "Tổng quan", icon: LayoutDashboard },
+      { href: "/don-du-bao", label: "Đơn hàng dự báo", icon: Inbox },
       { href: "/don-hang", label: "Vận đơn", icon: Package },
       { href: "/bao-gia", label: "Tra cứu giá gốc", icon: Scale },
     ],
@@ -28,6 +29,7 @@ const NAV = [
     group: "Danh mục",
     items: [
       { href: "/khach-hang", label: "Khách hàng", icon: Users },
+      { href: "/nhom-gia", label: "Nhóm giá", icon: Tags },
       { href: "/tuyen", label: "Tuyến vận chuyển", icon: Route },
       { href: "/bang-gia", label: "Kho bảng giá", icon: BookOpenText },
       { href: "/nguoi-dung", label: "Người dùng & quyền", icon: ShieldCheck },

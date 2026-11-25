@@ -1,11 +1,11 @@
 import "server-only";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { customers, orderPackages, orders, routes } from "@/drizzle/schema";
+import { customers, orderDrafts, orders, routes } from "@/drizzle/schema";
 import { readWorkbook } from "@/lib/pricing/read-xlsx";
 import type { Cell } from "@/lib/pricing/import-excel";
 import { parseCsv, parseOrderSheet, parseSheetUrl, type OrderDraft, type OrderParseResult } from "./import-parse";
-import { repriceOrders, type RepriceReport } from "./reprice";
+import { stageDrafts, type StageResult } from "./drafts-service";
 
 export class OrderImportError extends Error {}
 
@@ -24,7 +24,7 @@ export interface OrderImportPreview {
   totalRows: number;
   newCount: number;
   packageCount: number;
-  duplicatesDb: string[]; // order_key đã có trong hệ thống
+  duplicatesDb: string[]; // order_key đã có trong Vận đơn hoặc Đơn hàng dự báo
   duplicatesFile: { row: number; orderKey: string }[];
   errors: { row: number; billCode?: string; message: string }[];
   warnings: string[];
@@ -33,11 +33,7 @@ export interface OrderImportPreview {
   canCommit: boolean;
 }
 
-export interface OrderImportResult {
-  inserted: number;
-  duplicates: number;
-  reprice: RepriceReport;
-}
+export type OrderImportResult = StageResult;
 
 // -----------------------------------------------------------------------------
 export function readOrderImportForm(fd: FormData): { options: OrderImportOptions; file: File | null } {
@@ -110,10 +106,15 @@ async function analyze(o: OrderImportOptions, file: File | null) {
     custCodes.length ? db.select({ c: customers.customerCode }).from(customers).where(inArray(customers.customerCode, custCodes)) : [],
     routeCodes.length ? db.select({ c: routes.routeCode }).from(routes).where(inArray(routes.routeCode, routeCodes)) : [],
   ]);
+  // Trùng = đã có trong Vận đơn, hoặc đã nằm trong Đơn hàng dự báo (đang chờ / đã xác nhận / đã loại)
   const existing = new Set<string>();
   for (let i = 0; i < keys.length; i += 1000) {
     const chunk = keys.slice(i, i + 1000);
-    for (const r of await db.select({ k: orders.orderKey }).from(orders).where(inArray(orders.orderKey, chunk))) existing.add(r.k!);
+    const [a, b] = await Promise.all([
+      db.select({ k: orders.orderKey }).from(orders).where(inArray(orders.orderKey, chunk)),
+      db.select({ k: orderDrafts.orderKey }).from(orderDrafts).where(inArray(orderDrafts.orderKey, chunk)),
+    ]);
+    for (const r of [...a, ...b]) existing.add(r.k!);
   }
   const knownC = new Set(custRows.map((r) => r.c));
   const knownR = new Set(routeRows.map((r) => r.c));
@@ -155,53 +156,13 @@ export async function previewOrderImport(o: OrderImportOptions, file: File | nul
   };
 }
 
-/** Ghi các đơn mới (bỏ qua đơn trùng order_key, kể cả trùng phát sinh đồng thời) rồi tính giá */
-export async function commitOrderImport(o: OrderImportOptions, file: File | null): Promise<OrderImportResult> {
+/** Đưa các đơn mới hợp lệ vào Đơn hàng dự báo (chờ nhân viên xác nhận) */
+export async function stageOrderImport(o: OrderImportOptions, file: File | null, userId: string | null): Promise<OrderImportResult> {
   const a = await analyze(o, file);
-  if (a.valid.length === 0) throw new OrderImportError("Không có đơn mới hợp lệ để nhập.");
-  const source = o.source === "SHEET" ? "SYNC" : "IMPORT";
-
-  return db.transaction(async (tx) => {
-    const ids: number[] = [];
-    for (let i = 0; i < a.valid.length; i += 500) {
-      const chunk = a.valid.slice(i, i + 500);
-      const inserted = await tx
-        .insert(orders)
-        .values(
-          chunk.map((d) => ({
-            customerCode: d.customerCode,
-            billCode: d.billCode,
-            trackingNumber: d.trackingNumber,
-            source: source as "SYNC" | "IMPORT",
-            routeCode: d.routeCode,
-            assignedRouteCode: d.assignedRouteCode ?? d.routeCode,
-            destinationIso2: d.destinationIso2,
-            ...(d.createdAt && { createdAt: d.createdAt }),
-            shippedAt: d.shippedAt,
-            receiverName: d.receiverName,
-            receiverPhone: d.receiverPhone,
-            receiverEmail: d.receiverEmail,
-            receiverAddress: d.receiverAddress,
-            receiverCity: d.receiverCity,
-            receiverState: d.receiverState,
-            receiverPostalCode: d.receiverPostalCode,
-            goodsDescription: d.goodsDescription,
-            hsCode: d.hsCode,
-            declaredValueUsd: d.declaredValueUsd,
-            note: d.note,
-          })),
-        )
-        .onConflictDoNothing({ target: orders.orderKey })
-        .returning({ id: orders.id, orderKey: orders.orderKey });
-      const byKey = new Map(inserted.map((r) => [r.orderKey!, r.id]));
-      const pkgRows = chunk.flatMap((d) => {
-        const id = byKey.get(d.orderKey);
-        return id ? d.packages.map((p, k) => ({ orderId: id, seq: k + 1, ...p })) : [];
-      });
-      for (let j = 0; j < pkgRows.length; j += 2000) await tx.insert(orderPackages).values(pkgRows.slice(j, j + 2000));
-      ids.push(...inserted.map((r) => r.id));
-    }
-    const reprice = await repriceOrders(tx, ids);
-    return { inserted: ids.length, duplicates: a.duplicatesDb.length + (a.valid.length - ids.length), reprice };
-  });
+  if (a.valid.length === 0) throw new OrderImportError("Không có đơn mới hợp lệ để đưa vào Đơn hàng dự báo.");
+  const r = await stageDrafts(a.valid, { source: o.source === "SHEET" ? "SYNC" : "IMPORT", label: a.label, userId });
+  if (o.source === "SHEET" && o.defaultCustomerCode && !o.sheetUrl) {
+    await db.update(customers).set({ lastSyncedAt: new Date().toISOString() }).where(eq(customers.customerCode, o.defaultCustomerCode));
+  }
+  return { ...r, skipped: r.skipped + a.duplicatesDb.length };
 }

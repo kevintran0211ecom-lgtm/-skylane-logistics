@@ -17,7 +17,7 @@ export function CancelStatement({ id, disabled }: { id: number; disabled: boolea
       <Button variant="outline" onClick={() => setOpen(true)} disabled={disabled} title={disabled ? "Bảng kê đã có thanh toán — gỡ phân bổ trước" : undefined}>
         <Ban /> Hủy bảng kê
       </Button>
-      <Dialog open={open && !state?.ok} onOpenChange={setOpen} title="Hủy bảng kê" description="Bảng kê được đánh dấu “Đã hủy” (vẫn lưu lịch sử). Đơn không thuộc bảng kê hiệu lực nào khác sẽ về “Chưa thanh toán”; giá đơn vẫn khóa.">
+      <Dialog open={open && !state?.ok} onOpenChange={setOpen} title="Hủy bảng kê" description="Bảng kê được đánh dấu “Đã hủy” (vẫn lưu lịch sử). Đơn không thuộc bảng kê hiệu lực nào khác về “Chưa thanh toán”, được mở khóa giá và tính lại giá ngay. Bảng kê đã có thu tiền: hủy hoặc sửa phiếu thu ở Đối soát trước.">
         <form onSubmit={submitWithoutReset(action)} className="grid gap-4">
           {state && !state.ok && <Alert tone="danger">{state.error}</Alert>}
           <Field label="Lý do hủy" htmlFor="reason">
