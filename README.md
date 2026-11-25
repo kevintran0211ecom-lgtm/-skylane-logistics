@@ -77,3 +77,9 @@ Sinh lại file mẫu: `python3 scripts/make-price-template.py public/templates/
 | Vận đơn | `orders`, `order_packages` |
 | Công nợ | `statements`, `statement_items`, `receipts`, `receipt_allocations` |
 | Nhật ký | `audit_logs` |
+
+## Tự động lưu lên GitHub
+
+- `scripts/git-autosave.sh` — commit mọi thay đổi (bỏ qua `.env`) rồi push lên `origin`.
+- Khi làm việc với Claude Code, hook trong `.claude/settings.json` tự commit sau mỗi lần sửa file và push khi kết thúc lượt.
+- Trên máy của bạn: `scripts/git-autosave.sh --watch` theo dõi liên tục, tự lưu 20 giây sau lần sửa cuối.
