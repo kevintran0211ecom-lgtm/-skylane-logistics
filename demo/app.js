@@ -728,10 +728,25 @@ function createDialog() {
       <label class="f"><span>Tuyến chỉ định (giá gốc)</span><select class="inp" name="assigned">${routeOpts("", "Như tuyến vận chuyển")}</select></label>
       <label class="f"><span>Điểm đến (ISO2) *</span><input class="inp uppercase" name="iso2" maxlength="2" value="US"></label>
       <label class="f"><span>Ngày gửi hàng</span><input class="inp" type="date" name="shipped" value="${today()}"></label>
-      <label class="f sm:col-span-2"><span>Người nhận</span><input class="inp" name="receiver"></label>
     </div>
+    <fieldset class="grid gap-3 sm:grid-cols-3"><legend class="mb-1 text-sm font-semibold">Người nhận</legend>
+      <label class="f"><span>Tên người nhận</span><input class="inp" name="receiver"></label>
+      <label class="f"><span>Số điện thoại</span><input class="inp" name="rPhone" inputmode="tel"></label>
+      <label class="f"><span>Email</span><input class="inp" name="rEmail" type="email"></label>
+      <label class="f sm:col-span-3"><span>Địa chỉ</span><input class="inp" name="rAddress"></label>
+      <label class="f"><span>Thành phố</span><input class="inp" name="rCity"></label>
+      <label class="f"><span>Bang / tỉnh</span><input class="inp" name="rState"></label>
+      <label class="f"><span>Mã bưu chính</span><input class="inp" name="rPostal"></label>
+    </fieldset>
+    <fieldset class="grid gap-3 sm:grid-cols-4"><legend class="mb-1 text-sm font-semibold">Hàng hóa (khai báo hải quan)</legend>
+      <label class="f"><span>Tên hàng tiếng Việt</span><input class="inp" name="goodsVi"></label>
+      <label class="f"><span>Tên hàng tiếng Anh</span><input class="inp" name="goodsEn"></label>
+      <label class="f"><span>Mã HS</span><input class="inp" name="hs"></label>
+      <label class="f"><span>Giá trị khai báo (USD)</span><input class="inp" name="declared" inputmode="decimal"></label>
+    </fieldset>
     <fieldset class="card grid gap-2 p-3"><legend class="px-1 text-sm font-medium">Kiện hàng</legend>${pkHead}<div id="pks" class="grid gap-2">${pkRow({ l: "30", w: "20", h: "15", kg: "0.8" })}</div><div><button type="button" class="btn o sm" data-a="pk-add">+ Thêm kiện</button></div></fieldset>
-    <div class="flex justify-end gap-2"><button type="button" class="btn o" data-a="close">Hủy</button><button class="btn" data-a="create-save" type="button">Thêm vào chờ xác nhận</button></div></form>`);
+    <label class="f"><span>Ghi chú</span><textarea class="inp" name="note" rows="2"></textarea></label>
+    <div class="flex justify-end gap-2"><button type="button" class="btn o" data-a="close">Hủy</button><button class="btn" data-a="create-save" type="button">Thêm vào chờ xác nhận</button></div></form>`, true);
 }
 function bulkDialog() {
   const allowed = P.BULK_FIELDS_BY_ROLE[me().role];
@@ -1345,8 +1360,18 @@ const A = {
     if (!bill) return toast("Nhập mã vận đơn.", "bad");
     if (!/^[A-Z]{2}$/.test(iso2)) return toast("Điểm đến phải là mã ISO2.", "bad");
     if (usedKeys().has(`${c}|${bill}`)) return toast(`Trùng order_key ${c}|${bill} — đơn đã có trong Vận đơn hoặc Đơn hàng dự báo.`, "bad");
+    const t = (k) => String(fd.get(k) || "").trim() || null;
+    const email = t("rEmail"), declared = t("declared");
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) return toast("Email người nhận không hợp lệ.", "bad");
+    if (declared && !IX.parseNumberCell(declared, "price")) return toast("Giá trị khai báo không hợp lệ (VD 25 hoặc 25,5).", "bad");
     let packages; try { packages = readPkgs($("#f-create")); } catch (e) { return toast(e.message, "bad"); }
-    stageDrafts([{ customerCode: c, billCode: bill, orderKey: `${c}|${bill}`, trackingNumber: String(fd.get("tracking") || "") || null, routeCode: fd.get("route"), assignedRouteCode: fd.get("assigned") || null, destinationIso2: iso2, createdAt: null, shippedAt: fd.get("shipped") ? fd.get("shipped") + "T10:00:00+07:00" : null, receiverName: String(fd.get("receiver") || "") || null, goodsDescription: null, note: null, packages: packages.map((p) => ({ lengthCm: p.l, widthCm: p.w, heightCm: p.h, actualWeight: p.kg })) }], "MANUAL", "Nhập tay");
+    stageDrafts([{
+      customerCode: c, billCode: bill, orderKey: `${c}|${bill}`, trackingNumber: t("tracking"), routeCode: fd.get("route"), assignedRouteCode: fd.get("assigned") || null, destinationIso2: iso2,
+      createdAt: null, shippedAt: fd.get("shipped") ? fd.get("shipped") + "T10:00:00+07:00" : null,
+      receiverName: t("receiver"), receiverPhone: t("rPhone"), receiverEmail: email?.toLowerCase() ?? null, receiverAddress: t("rAddress"), receiverCity: t("rCity"), receiverState: t("rState"), receiverPostalCode: t("rPostal"),
+      goodsDescription: t("goodsVi"), goodsNameEn: t("goodsEn"), hsCode: t("hs"), declaredValueUsd: declared ? IX.parseNumberCell(declared, "price") : null, note: t("note"),
+      packages: packages.map((p) => ({ lengthCm: p.l, widthCm: p.w, heightCm: p.h, actualWeight: p.kg })),
+    }], "MANUAL", "Nhập tay");
     save(); closeDialog(); ui.drafts.status = "CHO_XAC_NHAN"; location.hash = "don-du-bao"; render();
     toast(`Đã thêm ${bill} vào Đơn hàng dự báo — chọn đơn và bấm Xác nhận để chuyển sang Vận đơn.`);
   },
