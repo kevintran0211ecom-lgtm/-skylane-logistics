@@ -79,7 +79,7 @@ function seed() {
       { code: "SKL170", name: "Minh Nhật", group: "NHOM_BUSINESS", adjust: "-3", saleId: "u-khanh", currency: "VND", sheet: "" },
       { code: "SKL126", name: "Chị Amb", group: "CA_NHAN", adjust: "0", saleId: "u-khanh", currency: "VND", sheet: "" },
     ],
-    drafts: [], sheetVisible: 2,
+    drafts: [], sheetSeen: { SKL116: 2 },
     routes: [
       ["VNFZZXR", "YUN", "EPK", 15000], ["VN-YTYCPREC", "YUN", "EPK", 5000], ["VNTHZXR", "YUN", "EPK", 6000], ["VNBKZXR", "YUN", "EPK", 5000],
       ["UPS HAN S5500", "HYE", "CPN", 5500], ["UPS HAN D", "HYE", "CPN", 6000], ["UPS SAVER SS", "LY TUONG", "CPN", 5500],
@@ -304,11 +304,15 @@ const SHEET_ROWS = [
   ["25/11/2026 15:05:00", 7, "#AP3007", "VNFZZXR", 22, "Quần jean", "", "", "James Lee", "3 Bay St, Miami, FL", "Miami", "FL", "33101", "+13055550166", "", "US", 1, "1,1", 32, 24, 10],
   ["25/11/2026 16:40:00", 8, "#AP3008", "CT UK-NK", 120, "Hàng gia dụng", "", "", "Sophie Turner", "21 King St, Manchester", "Manchester", "", "M2 4WU", "+447700900456", "", "GB", 2, "28", 60, 40, 40],
 ];
+// Mỗi khách có Google Sheet RIÊNG (mô phỏng): cùng mẫu dòng nhưng mã vận đơn theo tiền tố của khách đó
+const SHEET_PREFIX = { SKL116: "#AP30", SKL170: "MN30", SKL126: "AMB30" };
+const sheetRowsFor = (code) => SHEET_ROWS.map((r) => { const x = r.slice(); x[2] = (SHEET_PREFIX[code] || `${code}-`) + String(x[1]).padStart(2, "0"); return x; });
 function syncSheet(code) {
   const c = custOf(S, code);
   if (!c?.sheet) return { error: `${code} chưa có link Google Sheet.` };
-  S.sheetVisible = Math.min(SHEET_ROWS.length, (S.sheetVisible || 0) + 3); // mô phỏng: khách vừa nhập thêm đơn
-  const res = IP.parseOrderSheet([SHEET_HEAD, ...SHEET_ROWS.slice(0, S.sheetVisible)], { defaultCustomerCode: code });
+  S.sheetSeen = S.sheetSeen || {};
+  S.sheetSeen[code] = Math.min(SHEET_ROWS.length, (S.sheetSeen[code] || 0) + 3); // mô phỏng: khách vừa nhập thêm đơn trên sheet của mình
+  const res = IP.parseOrderSheet([SHEET_HEAD, ...sheetRowsFor(code).slice(0, S.sheetSeen[code])], { defaultCustomerCode: code });
   const keys = usedKeys();
   const fresh = res.drafts.filter((d) => !keys.has(d.orderKey));
   const added = stageDrafts(fresh, "SYNC", "Google Sheet · tab DON");
@@ -323,6 +327,14 @@ let S = null;
 try { S = JSON.parse(localStorage.getItem(KEY) || "null"); } catch { S = null; }
 const freshData = () => { S = seed(); syncSheet("SKL116"); }; // khách đã nhập sẵn vài đơn trên Google Sheet
 if (!S || !S.orders || !S.drafts) freshData();
+// Sửa lỗi đồng bộ cũ: trước đây mọi khách dùng chung sheet mô phỏng của SKL116 → đơn #AP30xx bị nhập nhầm cho khách khác
+let fixedSync = 0;
+if (typeof S.sheetVisible === "number") { S.sheetSeen = { SKL116: S.sheetVisible }; delete S.sheetVisible; }
+S.drafts = S.drafts.filter((d) => {
+  const bad = d.source === "SYNC" && d.status === "CHO_XAC_NHAN" && d.d.customerCode !== "SKL116" && /^#AP30\d\d$/.test(d.d.billCode);
+  if (bad) fixedSync++;
+  return !bad;
+});
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ ...S, receipts: S.receipts.map((r) => ({ ...r, proofs: [] })) })); } catch {} };
 save();
 
@@ -873,7 +885,7 @@ function vDrafts() {
     <td><span title="${esc(x.label)}">${badge(...SRC[x.source])}</span></td><td class="num">${dtVi(d.createdAt || x.at)}</td>
     ${f.status === "CHO_XAC_NHAN" ? "" : `<td class="num">${dtVi(x.decidedAt)}${x.reason ? `<div class="text-xs muted">${esc(x.reason)}</div>` : ""}</td>`}</tr>`; }).join("") || `<tr><td colspan="12" class="py-8 text-center muted">${f.status === "CHO_XAC_NHAN" ? "Không có đơn chờ xác nhận. Bấm “Đồng bộ Google Sheet” để lấy đơn khách vừa nhập." : "Không có đơn."}</td></tr>`}
   </tbody></table></div>
-  <p class="mt-2 text-xs muted">Đơn đã xác nhận hoặc đã loại không bị đồng bộ lại. Mỗi lần bấm “Đồng bộ Google Sheet” ở bản chạy thử, khách SKL116 được mô phỏng là vừa nhập thêm vài đơn.</p>`;
+  <p class="mt-2 text-xs muted">Đơn đã xác nhận hoặc đã loại không bị đồng bộ lại. Bản chạy thử mô phỏng mỗi khách có Google Sheet riêng: mỗi lần bấm đồng bộ, khách đó được coi là vừa nhập thêm vài đơn (có 1 dòng sai mã nước “USA” để minh họa kiểm tra lỗi).</p>`;
 }
 
 // =============================================================================
@@ -1289,7 +1301,8 @@ const A = {
     const r = syncSheet(el.dataset.id);
     if (r.error) return toast(r.error, "bad");
     save(); closeDialog(); ui.drafts.status = "CHO_XAC_NHAN"; render();
-    toast(`Đồng bộ ${el.dataset.id}: ${r.added} đơn mới vào chờ xác nhận, bỏ qua ${r.skipped} đơn đã có${r.errors.length ? `, ${r.errors.length} dòng lỗi (${r.errors.map((e) => e.message).join("; ")})` : ""}.`, r.errors.length ? "warn" : "ok");
+    const errs = r.errors.map((e) => `dòng ${e.row}${e.billCode ? ` · ${e.billCode}` : ""}: ${e.message}`).join("; ");
+    toast(`Đồng bộ ${el.dataset.id}: ${r.added ? `${r.added} đơn mới vào Chờ xác nhận` : "không có đơn mới kể từ lần đồng bộ trước"}${r.skipped ? `, bỏ qua ${r.skipped} đơn đã có` : ""}.${r.errors.length ? ` ${r.errors.length} dòng lỗi chưa nhận — ${errs}. Sửa trên Google Sheet của khách rồi đồng bộ lại.` : ""}`, r.errors.length ? "warn" : "ok");
   },
   "create-open": createDialog,
   "pk-add": () => $("#pks").insertAdjacentHTML("beforeend", pkRow()),
@@ -1614,4 +1627,5 @@ document.addEventListener("paste", (e) => {
 });
 addEventListener("hashchange", () => { ui.ver = ui.st = ui.stNew = null; render(); });
 render();
+if (fixedSync) { save(); toast(`Đã gỡ ${fixedSync} đơn bị đồng bộ nhầm (lỗi sheet mô phỏng dùng chung). Đồng bộ lại để lấy đơn đúng của từng khách.`, "warn"); }
 }
