@@ -107,6 +107,7 @@ export async function confirmDrafts(ids: number[], userId: string | null): Promi
             receiverState: d.receiverState,
             receiverPostalCode: d.receiverPostalCode,
             goodsDescription: d.goodsDescription,
+            goodsNameEn: d.goodsNameEn ?? null,
             hsCode: d.hsCode,
             declaredValueUsd: d.declaredValueUsd,
             note: d.note,

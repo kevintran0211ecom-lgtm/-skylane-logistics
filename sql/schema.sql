@@ -258,7 +258,8 @@ CREATE TABLE orders (
   -- Mốc thời gian
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   received_at           TIMESTAMPTZ,                         -- nhận kho
-  shipped_at            TIMESTAMPTZ,                         -- Ngày gửi hàng
+  shipped_at            TIMESTAMPTZ,                         -- Ngày gửi hàng (tra bảng giá)
+  exported_at           TIMESTAMPTZ,                         -- Thời gian xuất hàng (tự ghi khi → 'Đã xuất hàng')
   delivered_at          TIMESTAMPTZ,
   -- Ngày tra bảng giá (Asia/Saigon): shipped_at, fallback created_at
   pricing_date          DATE GENERATED ALWAYS AS ((timezone('Asia/Saigon', COALESCE(shipped_at, created_at)))::date) STORED,
@@ -300,7 +301,8 @@ CREATE TABLE orders (
   receiver_postal_code  TEXT,
 
   -- Hải quan (USD)
-  goods_description     TEXT,
+  goods_description     TEXT,                                -- Tên hàng tiếng Việt
+  goods_name_en         TEXT,                                -- Tên hàng tiếng Anh
   hs_code               TEXT,
   declared_value_usd    NUMERIC(14,2),
   customs_items         JSONB NOT NULL DEFAULT '[]'::jsonb,  -- [{name, qty, unit_value_usd, hs_code}]
@@ -342,6 +344,13 @@ BEGIN
     NEW.price_locked_by := NULL;
   END IF;
 
+  -- Thời gian xuất hàng: ghi khi chuyển sang 'Đã xuất hàng' (giữ nguyên nếu đã có)
+  IF NEW.status = 'Đã xuất hàng'
+     AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM NEW.status)
+     AND NEW.exported_at IS NULL THEN
+    NEW.exported_at := now();
+  END IF;
+
   IF TG_OP = 'UPDATE' THEN
     NEW.updated_at  := now();
     NEW.row_version := OLD.row_version + 1;
@@ -358,6 +367,7 @@ CREATE INDEX ix_orders_customer_date ON orders (customer_code, pricing_date DESC
 CREATE INDEX ix_orders_date          ON orders (pricing_date DESC, id DESC);
 CREATE INDEX ix_orders_created       ON orders (created_at DESC);
 CREATE INDEX ix_orders_status_date   ON orders (status, pricing_date DESC);
+CREATE INDEX ix_orders_exported      ON orders (exported_at DESC) WHERE exported_at IS NOT NULL;
 CREATE INDEX ix_orders_route         ON orders (route_code, pricing_date DESC);
 CREATE INDEX ix_orders_assigned      ON orders (assigned_route_code, pricing_date DESC);
 CREATE INDEX ix_orders_bill_code     ON orders (bill_code);

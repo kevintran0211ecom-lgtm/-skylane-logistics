@@ -53,6 +53,7 @@ describe("Đọc đơn từ sheet nguồn khách", () => {
       createdAt: "2026-11-18T15:19:43+07:00",
       receiverEmail: "abc@gmail.com",
       goodsDescription: "Quần áo",
+      goodsNameEn: null,
       declaredValueUsd: "20",
       packages: [{ lengthCm: "34", widthCm: "23", heightCm: "11", actualWeight: "0.786" }],
     });

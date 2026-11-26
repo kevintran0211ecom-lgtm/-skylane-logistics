@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { customers, orders, statementItems, statements } from "@/drizzle/schema";
 import { formatStatementNo, STATEMENT_PREFIX, statementName } from "./format";
 import { repriceOrders, type RepriceReport } from "@/lib/orders/reprice";
+import { searchMode } from "@/lib/search";
 
 export class StatementError extends Error {}
 
@@ -193,21 +194,48 @@ export async function cancelStatement(id: number, reason: string | null) {
 // =============================================================================
 // Truy vấn
 // =============================================================================
+export const STATEMENT_SORT_KEYS = ["statementNo", "name", "customerCode", "issuedAt", "orderCount", "totalAmount", "paidAmount", "balanceAmount", "debtStatus", "status"] as const;
+export type StatementSortKey = (typeof STATEMENT_SORT_KEYS)[number];
+
+/**
+ * Tìm bảng kê: 1 mã → gần đúng theo mã/tên bảng kê hoặc mã vận đơn bên trong;
+ * nhiều mã (mỗi dòng 1 mã) → khớp chính xác mã bảng kê HOẶC mã vận đơn có trong bảng kê.
+ */
+function statementSearch(q?: string) {
+  const m = searchMode(q);
+  if (m.kind === "none") return undefined;
+  if (m.kind === "codes") {
+    return or(
+      inArray(statements.statementNo, m.codes),
+      sql`exists (select 1 from ${statementItems} si where si.statement_id = ${statements.id} and si.bill_code in ${m.codes})`,
+    );
+  }
+  const like = `%${m.term}%`;
+  return or(
+    ilike(statements.statementNo, like),
+    ilike(statements.name, like),
+    sql`exists (select 1 from ${statementItems} si where si.statement_id = ${statements.id} and si.bill_code ilike ${like})`,
+  );
+}
+
 export async function listStatements(f: {
   q?: string;
   customerCode?: string;
   status?: "ACTIVE" | "CANCELLED";
   saleUserId?: string | null;
+  sort?: StatementSortKey;
+  dir?: "asc" | "desc";
   page: number;
   pageSize: number;
 }) {
-  const term = f.q?.trim();
   const where = and(
-    term ? or(ilike(statements.statementNo, `%${term}%`), ilike(statements.name, `%${term}%`)) : undefined,
+    statementSearch(f.q),
     f.customerCode ? eq(statements.customerCode, f.customerCode) : undefined,
     f.status ? eq(statements.status, f.status) : undefined,
     f.saleUserId ? eq(customers.saleUserId, f.saleUserId) : undefined,
   );
+  const sortCol = f.sort ? statements[f.sort] : null;
+  const order = sortCol ? [f.dir === "asc" ? sql`${sortCol} asc nulls last` : sql`${sortCol} desc nulls last`, desc(statements.id)] : [desc(statements.issuedAt), desc(statements.id)];
   const [rows, [{ count }]] = await Promise.all([
     db
       .select({
@@ -229,7 +257,7 @@ export async function listStatements(f: {
       .from(statements)
       .innerJoin(customers, eq(customers.customerCode, statements.customerCode))
       .where(where)
-      .orderBy(desc(statements.issuedAt), desc(statements.id))
+      .orderBy(...order)
       .limit(f.pageSize)
       .offset((f.page - 1) * f.pageSize),
     db
@@ -239,6 +267,26 @@ export async function listStatements(f: {
       .where(where),
   ]);
   return { rows, total: count };
+}
+
+/** Tìm nhiều mã: mã nào (mã bảng kê hoặc mã vận đơn) có trong hệ thống — để báo mã không tìm thấy */
+export async function foundStatementCodes(codes: string[], saleUserId?: string | null): Promise<string[]> {
+  if (!codes.length) return [];
+  const scope = saleUserId ? eq(customers.saleUserId, saleUserId) : undefined;
+  const [a, b] = await Promise.all([
+    db
+      .select({ c: statements.statementNo })
+      .from(statements)
+      .innerJoin(customers, eq(customers.customerCode, statements.customerCode))
+      .where(and(inArray(statements.statementNo, codes), scope)),
+    db
+      .selectDistinct({ c: statementItems.billCode })
+      .from(statementItems)
+      .innerJoin(statements, eq(statements.id, statementItems.statementId))
+      .innerJoin(customers, eq(customers.customerCode, statements.customerCode))
+      .where(and(inArray(statementItems.billCode, codes), scope)),
+  ]);
+  return [...a, ...b].map((r) => r.c);
 }
 export type StatementRow = Awaited<ReturnType<typeof listStatements>>["rows"][number];
 

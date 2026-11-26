@@ -177,7 +177,9 @@ export interface OrderDraft {
   receiverPostalCode: string | null;
   receiverPhone: string | null;
   receiverEmail: string | null;
-  goodsDescription: string | null;
+  goodsDescription: string | null; // Tên hàng tiếng Việt
+  /** Tên hàng tiếng Anh (đơn dự báo cũ có thể chưa có trường này) */
+  goodsNameEn?: string | null;
   hsCode: string | null;
   declaredValueUsd: string | null;
   note: string | null;
@@ -324,7 +326,8 @@ export function parseOrderSheet(rows: Cell[][], opts: { defaultCustomerCode?: st
       receiverPostalCode: txt(get(row, "receiverPostalCode")),
       receiverPhone: txt(get(row, "receiverPhone")),
       receiverEmail: txt(get(row, "receiverEmail"))?.toLowerCase() ?? null,
-      goodsDescription: [goodsVi, goodsEn].filter(Boolean).join(" / ") || null,
+      goodsDescription: goodsVi,
+      goodsNameEn: goodsEn,
       hsCode: txt(get(row, "hsCode")),
       declaredValueUsd: declared,
       note: txt(get(row, "note")),

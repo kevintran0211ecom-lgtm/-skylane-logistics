@@ -79,7 +79,7 @@ export function ImportForm({ groups, customers }: { groups: Option[]; customers:
         )}
         className="grid h-fit gap-4 rounded-lg border bg-card p-5"
       >
-        <Field label="File Excel (.xlsx) *" htmlFor="file" hint={<a href="/templates/mau-bang-gia.xlsx" download className="inline-flex items-center gap-1 text-primary hover:underline"><Download className="size-3" />Tải file mẫu</a>}>
+        <Field label="File Excel (.xlsx) *" htmlFor="file" hint={<a href="/api/bang-gia/mau-xlsx" className="inline-flex items-center gap-1 text-primary hover:underline"><Download className="size-3" />Tải file Excel mẫu (2 tuyến ví dụ + hướng dẫn)</a>}>
           <Input id="file" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
         </Field>
 

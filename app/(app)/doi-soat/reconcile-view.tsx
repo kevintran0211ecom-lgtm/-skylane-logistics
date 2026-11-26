@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { startTransition, useActionState, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardPaste, ImagePlus, Pencil, Sparkles, Undo2, Wand2, X } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
@@ -41,6 +42,16 @@ export function ReconcileView({
   const [proofs, setProofs] = useState<Proof[]>([]);
   const [dlg, setDlg] = useState<{ kind: "edit" | "cancel"; id: number } | { kind: "credit" } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const tab: "form" | "list" = params.get("tab") === "list" ? "list" : "form";
+  const setTab = (t: "form" | "list") => {
+    const q = new URLSearchParams(params.toString());
+    if (t === "list") q.set("tab", "list");
+    else q.delete("tab");
+    router.replace(`${pathname}?${q}`, { scroll: false });
+  };
   const closeDlg = useCallback((msg?: string) => {
     setDlg(null);
     if (msg) setNotice(msg);
@@ -109,12 +120,64 @@ export function ReconcileView({
             {Number(state.data.overpaid) > 0 && <li>Thu thừa (số dư có của khách): {formatMoney(state.data.overpaid)} đ</li>}
           </ul>
         </Alert>
-        <Button onClick={() => window.location.reload()}>Lập phiếu thu khác</Button>
+        <div className="flex gap-2">
+          <Button onClick={() => window.location.reload()}>Lập phiếu thu khác</Button>
+          <Button variant="outline" onClick={() => { const q = new URLSearchParams(params.toString()); q.set("tab", "list"); window.location.href = `${pathname}?${q}`; }}>
+            Xem danh sách phiếu thu
+          </Button>
+        </div>
       </Card>
     );
   }
 
+  const active = debt.history.filter((r) => r.status === "ACTIVE").length;
   return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Stat label="Tổng bảng kê" value={debt.total} />
+        <Stat label="Đã thanh toán" value={debt.paid} tone="text-emerald-700" />
+        <Stat label="Còn nợ" value={debt.balance} tone="text-destructive" strong />
+        <Stat label="Thu thừa (số dư có)" value={debt.credit} tone="text-blue-700">
+          {canManage && Number(debt.credit) > 0 && debt.open.length > 0 && (
+            <Button size="sm" variant="outline" className="mt-2 w-full" onClick={() => setDlg({ kind: "credit" })}>
+              Dùng cho bảng kê
+            </Button>
+          )}
+        </Stat>
+      </div>
+      {notice && (
+        <Alert tone="success">
+          <div className="flex items-start justify-between gap-2">
+            <span>{notice}</span>
+            <button type="button" onClick={() => setNotice(null)} aria-label="Đóng thông báo">
+              <X className="size-4" />
+            </button>
+          </div>
+        </Alert>
+      )}
+
+      {/* Tách 2 khu: nhập phiếu thu  |  danh sách phiếu thu đã nhập */}
+      <nav className="flex gap-1 border-b" role="tablist" aria-label="Đối soát">
+        {([
+          ["form", canManage ? "Lập phiếu thu" : "Công nợ bảng kê"],
+          ["list", `Danh sách phiếu thu (${active})`],
+        ] as const).map(([k, label]) => (
+          <button
+            key={k}
+            type="button"
+            role="tab"
+            aria-selected={tab === k}
+            onClick={() => setTab(k)}
+            className={cn("-mb-px border-b-2 px-4 py-2 text-sm", tab === k ? "border-primary font-medium text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "list" ? (
+        <ReceiptList history={debt.history} canManage={canManage} onEdit={(id) => setDlg({ kind: "edit", id })} onCancel={(id) => setDlg({ kind: "cancel", id })} />
+      ) : (
     <div className={cn("grid gap-4", canManage && "xl:grid-cols-[420px_1fr]")}>
       {/* ---------------- Cột trái: thông tin phiếu thu (chỉ Kế toán/Admin) ---------------- */}
       {canManage && (
@@ -239,28 +302,6 @@ export function ReconcileView({
 
       {/* ---------------- Cột phải: công nợ & phân bổ ---------------- */}
       <section className="min-w-0 space-y-4">
-        {notice && (
-          <Alert tone="success">
-            <div className="flex items-start justify-between gap-2">
-              <span>{notice}</span>
-              <button type="button" onClick={() => setNotice(null)} aria-label="Đóng thông báo">
-                <X className="size-4" />
-              </button>
-            </div>
-          </Alert>
-        )}
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Stat label="Tổng bảng kê" value={debt.total} />
-          <Stat label="Đã thanh toán" value={debt.paid} tone="text-emerald-700" />
-          <Stat label="Còn nợ" value={debt.balance} tone="text-destructive" strong />
-          <Stat label="Thu thừa (số dư có)" value={debt.credit} tone="text-blue-700">
-            {canManage && Number(debt.credit) > 0 && debt.open.length > 0 && (
-              <Button size="sm" variant="outline" className="mt-2 w-full" onClick={() => setDlg({ kind: "credit" })}>
-                Dùng cho bảng kê
-              </Button>
-            )}
-          </Stat>
-        </div>
 
         {amountNum > 0 && suggestion.mode !== "NONE" && (
           <Alert tone="info">
@@ -355,58 +396,9 @@ export function ReconcileView({
           </TBody>
         </Table>
 
-        <div>
-          <h3 className="mb-2 text-sm font-semibold">Phiếu thu gần đây</h3>
-          <Table>
-            <THead>
-              <TR className="hover:bg-transparent">
-                <TH>Mã phiếu</TH>
-                <TH>Thời gian</TH>
-                <TH className="text-right">Số tiền</TH>
-                <TH>Phân bổ</TH>
-                <TH className="text-right">Thu thừa</TH>
-                <TH>Minh chứng</TH>
-                {canManage && <TH className="w-20" />}
-              </TR>
-            </THead>
-            <TBody>
-              {debt.history.length === 0 && (
-                <TR>
-                  <TD colSpan={7} className="h-16 text-center text-muted-foreground">
-                    Chưa có phiếu thu.
-                  </TD>
-                </TR>
-              )}
-              {debt.history.map((r) => (
-                <TR key={r.id}>
-                  <TD className="font-medium">{r.receiptNo}</TD>
-                  <TD className="whitespace-nowrap tabular-nums">{dt(r.receivedAt)}</TD>
-                  <TD className="text-right tabular-nums">{formatMoney(r.amount)}</TD>
-                  <TD className="max-w-72 text-xs text-muted-foreground">{r.allocations || "—"}</TD>
-                  <TD className="text-right tabular-nums text-blue-700">{Number(r.overpaidAmount) ? formatMoney(r.overpaidAmount) : "—"}</TD>
-                  <TD className="space-x-1">
-                    {r.proofImages.map((p, i) => (
-                      <a key={p} href={`/api/receipts/proof?path=${encodeURIComponent(p)}`} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
-                        Ảnh {i + 1}
-                      </a>
-                    ))}
-                  </TD>
-                  {canManage && (
-                    <TD className="whitespace-nowrap">
-                      <Button variant="ghost" size="icon" onClick={() => setDlg({ kind: "edit", id: r.id })} title="Sửa phiếu thu" aria-label={`Sửa ${r.receiptNo}`}>
-                        <Pencil />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => setDlg({ kind: "cancel", id: r.id })} title="Hủy phiếu thu" aria-label={`Hủy ${r.receiptNo}`}>
-                        <Undo2 />
-                      </Button>
-                    </TD>
-                  )}
-                </TR>
-              ))}
-            </TBody>
-          </Table>
-        </div>
       </section>
+    </div>
+      )}
 
       <Dialog open={dlg?.kind === "credit"} onOpenChange={(o) => !o && setDlg(null)} title="Dùng tiền Thu thừa cho bảng kê" className="max-w-2xl">
         {dlg?.kind === "credit" && <ApplyCreditForm customerCode={customer.code} credit={Number(debt.credit)} open={debt.open} onDone={closeDlg} />}
@@ -437,5 +429,114 @@ function Stat({ label, value, tone, strong, children }: { label: string; value: 
       <p className={cn("mt-1 font-semibold tabular-nums", strong ? "text-xl" : "text-lg", tone)}>{formatMoney(value)}</p>
       {children}
     </Card>
+  );
+}
+
+type HistoryRow = CustomerDebt["history"][number];
+
+/** Danh sách phiếu thu đã nhập — tách riêng khỏi form nhập để dễ quan sát; tìm, lọc ngày, lọc trạng thái */
+function ReceiptList({ history, canManage, onEdit, onCancel }: { history: HistoryRow[]; canManage: boolean; onEdit: (id: number) => void; onCancel: (id: number) => void }) {
+  const [q, setQ] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [status, setStatus] = useState<"ACTIVE" | "CANCELLED" | "">("ACTIVE");
+  const day = (s: string) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Saigon" }).format(new Date(s));
+  const term = q.trim().toLowerCase();
+  const rows = history.filter(
+    (r) =>
+      (!status || r.status === status) &&
+      (!from || day(r.receivedAt) >= from) &&
+      (!to || day(r.receivedAt) <= to) &&
+      (!term || [r.receiptNo, r.bankRef, r.payerName, r.allocations, r.note].some((x) => (x ?? "").toLowerCase().includes(term))),
+  );
+  const sum = rows.reduce((t, r) => t + Number(r.amount), 0);
+  const over = rows.reduce((t, r) => t + Number(r.overpaidAmount), 0);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end gap-2">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Mã phiếu, mã giao dịch, người chuyển, mã bảng kê" className="w-80" aria-label="Tìm phiếu thu" />
+        <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-40" aria-label="Từ ngày" />
+        <span className="pb-2 text-muted-foreground">–</span>
+        <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-40" aria-label="Đến ngày" />
+        <NativeSelect value={status} onChange={(e) => setStatus(e.target.value as typeof status)} className="w-40" aria-label="Trạng thái">
+          <option value="ACTIVE">Đang hiệu lực</option>
+          <option value="CANCELLED">Đã hủy</option>
+          <option value="">Tất cả</option>
+        </NativeSelect>
+      </div>
+      <Table>
+        <THead>
+          <TR className="hover:bg-transparent">
+            <TH>Mã phiếu</TH>
+            <TH>Thời gian</TH>
+            <TH className="text-right">Số tiền</TH>
+            <TH>Phân bổ vào bảng kê</TH>
+            <TH className="text-right">Thu thừa</TH>
+            <TH>Mã GD / Người chuyển</TH>
+            <TH>Minh chứng</TH>
+            {canManage && <TH className="w-20" />}
+          </TR>
+        </THead>
+        <TBody>
+          {rows.length === 0 && (
+            <TR>
+              <TD colSpan={8} className="h-16 text-center text-muted-foreground">
+                Không có phiếu thu phù hợp.
+              </TD>
+            </TR>
+          )}
+          {rows.map((r) => (
+            <TR key={r.id} className={r.status === "CANCELLED" ? "opacity-60" : undefined}>
+              <TD className="font-medium">
+                {r.receiptNo}
+                {r.status === "CANCELLED" && (
+                  <span className="block">
+                    <Badge tone="danger">Đã hủy</Badge> <span className="text-xs text-muted-foreground">{r.cancelReason}</span>
+                  </span>
+                )}
+              </TD>
+              <TD className="whitespace-nowrap tabular-nums">{dt(r.receivedAt)}</TD>
+              <TD className="text-right font-medium tabular-nums">{formatMoney(r.amount)}</TD>
+              <TD className="max-w-72 text-xs text-muted-foreground">{r.allocations || "—"}</TD>
+              <TD className="text-right tabular-nums text-blue-700">{Number(r.overpaidAmount) ? formatMoney(r.overpaidAmount) : "—"}</TD>
+              <TD className="max-w-48 text-xs">
+                {r.bankRef}
+                {r.payerName && <span className="block text-muted-foreground">{r.payerName}</span>}
+              </TD>
+              <TD className="space-x-1">
+                {r.proofImages.map((p, i) => (
+                  <a key={p} href={`/api/receipts/proof?path=${encodeURIComponent(p)}`} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                    Ảnh {i + 1}
+                  </a>
+                ))}
+              </TD>
+              {canManage && (
+                <TD className="whitespace-nowrap">
+                  {r.status === "ACTIVE" && (
+                    <>
+                      <Button variant="ghost" size="icon" onClick={() => onEdit(r.id)} title="Sửa phiếu thu" aria-label={`Sửa ${r.receiptNo}`}>
+                        <Pencil />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => onCancel(r.id)} title="Hủy phiếu thu" aria-label={`Hủy ${r.receiptNo}`}>
+                        <Undo2 />
+                      </Button>
+                    </>
+                  )}
+                </TD>
+              )}
+            </TR>
+          ))}
+        </TBody>
+      </Table>
+      <p className="text-sm text-muted-foreground">
+        {rows.length} phiếu · Tổng thu <b className="text-foreground tabular-nums">{formatMoney(sum)} đ</b>
+        {over > 0 && (
+          <>
+            {" "}
+            · Thu thừa <b className="text-blue-700 tabular-nums">{formatMoney(over)} đ</b>
+          </>
+        )}
+      </p>
+    </div>
   );
 }

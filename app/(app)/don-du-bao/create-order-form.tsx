@@ -142,8 +142,11 @@ export function CreateOrderForm({ routes, customers, onDone }: { routes: RouteOp
         <Field label="Mã bưu chính" htmlFor="receiverPostalCode">
           <Input id="receiverPostalCode" name="receiverPostalCode" />
         </Field>
-        <Field label="Tên hàng" htmlFor="goodsDescription">
+        <Field label="Tên hàng tiếng Việt" htmlFor="goodsDescription">
           <Input id="goodsDescription" name="goodsDescription" />
+        </Field>
+        <Field label="Tên hàng tiếng Anh" htmlFor="goodsNameEn">
+          <Input id="goodsNameEn" name="goodsNameEn" />
         </Field>
         <Field label="Mã HS" htmlFor="hsCode">
           <Input id="hsCode" name="hsCode" />

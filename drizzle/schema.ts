@@ -178,7 +178,8 @@ export const orders = pgTable("orders", {
   debtStatus: debtStatus("debt_status").notNull().default("Chưa thanh toán"),
   createdAt: ts("created_at").notNull().defaultNow(),
   receivedAt: ts("received_at"),
-  shippedAt: ts("shipped_at"),
+  shippedAt: ts("shipped_at"), // Ngày gửi hàng (tra bảng giá)
+  exportedAt: ts("exported_at"), // Thời gian xuất hàng
   deliveredAt: ts("delivered_at"),
   pricingDate: date("pricing_date").generatedAlwaysAs(sql`(timezone('Asia/Saigon', COALESCE(shipped_at, created_at)))::date`),
   packageCount: integer("package_count").notNull().default(0),
@@ -205,7 +206,8 @@ export const orders = pgTable("orders", {
   receiverCity: text("receiver_city"),
   receiverState: text("receiver_state"),
   receiverPostalCode: text("receiver_postal_code"),
-  goodsDescription: text("goods_description"),
+  goodsDescription: text("goods_description"), // Tên hàng tiếng Việt
+  goodsNameEn: text("goods_name_en"),
   hsCode: text("hs_code"),
   declaredValueUsd: numeric("declared_value_usd", { precision: 14, scale: 2 }),
   customsItems: jsonb("customs_items").notNull().default([]),

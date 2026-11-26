@@ -41,6 +41,7 @@
     "@types/react-dom": "^19.1.7",
     "dotenv": "^17.2.1",
     "drizzle-kit": "^0.31.4",
+    "esbuild": "^0.25.12",
     "eslint": "^9.33.0",
     "eslint-config-next": "^15.5.0",
     "tailwindcss": "^4.1.12",

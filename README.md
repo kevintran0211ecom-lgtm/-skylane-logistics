@@ -58,7 +58,7 @@ Ma trận quyền nằm duy nhất ở `lib/auth/permissions.ts` (có test) và 
 | Bảng kê | `/bang-ke` | Lọc đơn chưa lên bảng kê theo KH + ngày gửi → tạo bảng kê `SKLddMMyyXXXX` (snapshot, chuyển “xuất bảng kê”, khóa giá — 1 transaction); xuất `.xlsx` mẫu SkyLane (`/api/bang-ke/[id]/xlsx`, logo + VietQR MSB); hủy bảng kê |
 | Đối soát thu tiền | `/doi-soat` | 2 cột: phiếu thu `SKLTHUddMMyyXXX` (format nghìn, đọc bằng chữ, dán ảnh Ctrl+V → Supabase Storage) / công nợ + gợi ý khớp tiền (chính xác → gộp → FIFO); lưu 1 transaction, dư → Thu thừa |
 | Tra cứu giá gốc | `/bao-gia` | So sánh mọi tuyến theo điểm đến, cân, kích thước/CBM, ngày áp giá |
-| Import Excel | `/bang-gia/import` | 2 bước: Xem trước → Xác nhận. Bắt buộc Ngày hiệu lực; file mẫu `public/templates/mau-bang-gia.xlsx` |
+| Import Excel | `/bang-gia/import` | 2 bước: Xem trước → Xác nhận. Bắt buộc Ngày hiệu lực; file mẫu tải ở `/api/bang-gia/mau-xlsx` (sinh từ `lib/pricing/template.ts`) |
 
 **Import bảng giá** (`lib/pricing/import-excel.ts`, thuần, có test): tự dò dòng tiêu đề "Khối lượng (KG)", tên tuyến ở dòng trên (gộp ô theo cụm), cột nước lấy mã ISO2 đầu tiêu đề. Mốc số → Ma trận; nhãn `21-44`, `45-99`, `100+`, `300+` → Theo kg dạng (Từ, Đến] nối liền. Nước có giá giống hệt được gom 1 vùng. Ghi DB trong 1 transaction: khóa phiên bản đang áp dụng, chốt `effective_to` = ngày hiệu lực mới − 1, thêm phiên bản mới (`lib/pricing/versioning.ts`). Không sửa/xóa giá cũ.
 
@@ -66,7 +66,7 @@ Ma trận quyền nằm duy nhất ở `lib/auth/permissions.ts` (có test) và 
 
 Migration bổ sung: `sql/migrations/002_orders_volumetric_overrides.sql`, `003_statement_numbering.sql`, `004_receipt_account.sql` (kèm bucket Storage `receipt-proofs`) (đã gộp vào `sql/schema.sql`).
 
-Sinh lại file mẫu: `python3 scripts/make-price-template.py public/templates/mau-bang-gia.xlsx`
+File mẫu sinh từ `lib/pricing/template.ts` (dùng chung web thật và bản chạy thử, có unit test đọc lại được).
 
 ## Cấu trúc bảng
 

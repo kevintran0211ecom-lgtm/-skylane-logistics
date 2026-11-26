@@ -60,11 +60,13 @@ export async function getCustomerDebt(customerCode: string) {
         receivedAccount: receipts.receivedAccount,
         payerName: receipts.payerName,
         note: receipts.note,
+        status: receipts.status,
+        cancelReason: receipts.cancelReason,
       })
       .from(receipts)
-      .where(and(eq(receipts.customerCode, customerCode), eq(receipts.status, "ACTIVE")))
+      .where(eq(receipts.customerCode, customerCode))
       .orderBy(desc(receipts.receivedAt), desc(receipts.id))
-      .limit(20),
+      .limit(1000),
   ]);
   return { ...summary, credit: credit.credit, open, history };
 }

@@ -12,6 +12,9 @@ import { BULK_FIELDS_BY_ROLE, can } from "@/lib/auth/permissions";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { repriceMessage, repriceOrders, type RepriceReport } from "./reprice";
+import { parseOrderEdit } from "./edit";
+import { getOrderDetail, listOrderCodes, type OrderDetail } from "./queries";
+import type { OrderListFilter } from "./filters";
 
 const textArray = (items: string[]): SQL =>
   items.length ? sql`ARRAY[${sql.join(items.map((i) => sql`${i}`), sql`, `)}]::text[]` : sql`'{}'::text[]`;
@@ -126,4 +129,84 @@ export async function getOrderPackages(orderId: number) {
     .from(orderPackages)
     .where(and(eq(orderPackages.orderId, orderId)))
     .orderBy(orderPackages.seq);
+}
+
+// =============================================================================
+// Cửa sổ chi tiết 1 vận đơn (bấm vào mã vận đơn): xem & sửa đầy đủ trường
+// =============================================================================
+export async function getOrderDetailAction(id: number): Promise<{ ok: true; data: OrderDetail } | { ok: false; error: string }> {
+  const g = await guard("orders.view");
+  if (!g.ok) return g;
+  const d = await getOrderDetail(id);
+  if (!d || (g.user.saleScope && d.saleUserId !== g.user.saleScope)) return { ok: false, error: "Không tìm thấy vận đơn." };
+  // Kho không thấy tiền: loại ở server
+  if (!can(g.user.role, "orders.viewMoney")) return { ok: true, data: { ...d, sellAmount: "", costAmount: "", profit: "" } };
+  return { ok: true, data: d };
+}
+
+export async function updateOrderAction(_p: ActionState<RepriceReport>, fd: FormData): Promise<ActionState<RepriceReport>> {
+  const g = await guard("orders.view");
+  if (!g.ok) return g;
+  const parsed = parseOrderEdit(formToObject(fd), g.user.role);
+  if (!parsed.ok) return parsed;
+  const p = parsed.plan;
+  try {
+    const report = await db.transaction(async (tx) => {
+      const [o] = await tx
+        .select({
+          rowVersion: orders.rowVersion,
+          priceLocked: orders.priceLocked,
+          debtStatus: orders.debtStatus,
+          customerCode: orders.customerCode,
+          routeCode: orders.routeCode,
+          manualOverrides: orders.manualOverrides,
+        })
+        .from(orders)
+        .where(eq(orders.id, p.id))
+        .for("update");
+      if (!o) throw new OrderEditError("Không tìm thấy vận đơn.");
+      if (o.rowVersion !== p.rowVersion) throw new OrderEditError("Đơn vừa được người khác cập nhật — đóng cửa sổ và mở lại để xem dữ liệu mới.");
+      if (o.priceLocked && !can(g.user.role, "orders.editLocked")) throw new OrderEditError("Đơn đã khóa giá — chỉ Admin hoặc Kế toán được sửa.");
+      if (p.set.customerCode && p.set.customerCode !== o.customerCode && o.debtStatus !== "Chưa thanh toán")
+        throw new OrderEditError("Đơn đã lên bảng kê — không đổi được khách hàng. Hủy bảng kê trước nếu cần.");
+
+      const set: Record<string, unknown> = { ...p.set, updatedBy: g.user.id };
+      if ("assignedRouteCode" in p.set && p.set.assignedRouteCode === null) set.assignedRouteCode = p.set.routeCode ?? o.routeCode;
+      // Giá bán / giá gốc: số = ghi đè thủ công; trống = bỏ ghi đè (tự tính lại theo bảng giá)
+      const ov = new Set(o.manualOverrides);
+      for (const [field, key] of [["sellAmount", "sell_amount"], ["costAmount", "cost_amount"]] as const) {
+        const v = p[field];
+        if (v === undefined) continue;
+        if (v === null) ov.delete(key);
+        else {
+          ov.add(key);
+          set[field] = v;
+        }
+      }
+      if (p.sellAmount !== undefined || p.costAmount !== undefined) set.manualOverrides = [...ov].sort();
+
+      await tx.update(orders).set(set).where(eq(orders.id, p.id));
+      if (p.packages) {
+        await tx.delete(orderPackages).where(eq(orderPackages.orderId, p.id));
+        if (p.packages.length) await tx.insert(orderPackages).values(p.packages.map((k, i) => ({ orderId: p.id, seq: i + 1, ...k })));
+      }
+      return p.affectsPricing ? repriceOrders(tx, [p.id]) : { repriced: 0, locked: 0, failed: [] };
+    });
+    revalidatePath("/don-hang");
+    const extra = repriceMessage(report);
+    return { ok: true, message: `Đã lưu vận đơn${extra ? `; ${extra}` : ""}.`, data: report };
+  } catch (e) {
+    if (e instanceof OrderEditError) return { ok: false, error: e.message };
+    return { ok: false, error: dbErrorMessage(e, "Không lưu được vận đơn.") };
+  }
+}
+class OrderEditError extends Error {}
+
+/** Mã vận đơn của tất cả đơn theo bộ lọc hiện tại (menu Sao chép → Tất cả dòng) */
+export async function listOrderCodesAction(filter: Partial<OrderListFilter>): Promise<{ ok: true; codes: string[]; truncated: boolean } | { ok: false; error: string }> {
+  const g = await guard("orders.view");
+  if (!g.ok) return g;
+  const LIMIT = 20_000;
+  const rows = await listOrderCodes({ ...filter, saleUserId: g.user.saleScope }, LIMIT + 1);
+  return { ok: true, codes: rows.slice(0, LIMIT).map((r) => r.billCode), truncated: rows.length > LIMIT };
 }

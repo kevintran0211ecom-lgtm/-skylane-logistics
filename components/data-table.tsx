@@ -3,10 +3,13 @@
 import { useMemo } from "react";
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef, type RowSelectionState } from "@tanstack/react-table";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/misc";
 import { cn } from "@/lib/utils";
+
+/** meta của cột: width (px), sortKey (bấm tiêu đề để sắp xếp A→Z / Z→A qua URL ?sort=&dir=), align */
+export type ColumnMeta = { width?: number; sortKey?: string; align?: "right" };
 
 /**
  * Bảng dữ liệu phân trang phía server: trang hiện tại nằm trên URL (?page=),
@@ -20,6 +23,8 @@ export function DataTable<T>({
   pageSize,
   empty = "Chưa có dữ liệu.",
   selection,
+  footer,
+  onRowContextMenu,
   freeze = 0,
 }: {
   columns: ColumnDef<T, unknown>[];
@@ -30,6 +35,10 @@ export function DataTable<T>({
   empty?: string;
   /** Tick chọn dòng (giữ qua các trang theo id) */
   selection?: { getRowId: (row: T) => string; selected: RowSelectionState; onChange: (s: RowSelectionState) => void };
+  /** Dòng tổng cuối bảng (VD tổng số đơn, cân, tiền) */
+  footer?: React.ReactNode;
+  /** Chuột phải trên 1 dòng (VD menu Sao chép) */
+  onRowContextMenu?: (row: T, e: React.MouseEvent) => void;
   /** Số cột dữ liệu đầu tiên giữ cố định khi cuộn ngang (cột chọn tự giữ theo). Độ rộng lấy từ meta.width. */
   freeze?: number;
 }) {
@@ -87,20 +96,21 @@ export function DataTable<T>({
   });
 
   // Cột cố định: vị trí left cộng dồn theo meta.width (mặc định 150px)
-  const frozen = new Map<string, { left: number; last: boolean }>();
+  const frozen = new Map<string, { left: number; last: boolean; width: number }>();
   if (freeze > 0) {
     const cols = table.getAllLeafColumns().slice(0, freeze + (hasSelection ? 1 : 0));
     let left = 0;
     cols.forEach((c, i) => {
-      frozen.set(c.id, { left, last: i === cols.length - 1 });
-      left += (c.columnDef.meta as { width?: number } | undefined)?.width ?? 150;
+      const width = (c.columnDef.meta as ColumnMeta | undefined)?.width ?? 150;
+      frozen.set(c.id, { left, last: i === cols.length - 1, width });
+      left += width;
     });
   }
-  const stick = (id: string, header = false) => {
+  const stick = (id: string, header = false): { style?: React.CSSProperties; className?: string } => {
     const f = frozen.get(id);
     if (!f) return {};
     return {
-      style: { position: "sticky" as const, left: f.left, zIndex: header ? 3 : 2 },
+      style: { position: "sticky", left: f.left, zIndex: header ? 3 : 2, width: f.width, minWidth: f.width },
       className: cn(header ? "bg-muted" : "bg-card group-data-[state=selected]:bg-primary/5", f.last && "shadow-[inset_-1px_0_0_var(--border),8px_0_8px_-8px_rgb(0_0_0/0.25)]"),
     };
   };
@@ -111,6 +121,22 @@ export function DataTable<T>({
     else q.set("page", String(p));
     router.push(`${pathname}${q.size ? `?${q}` : ""}`);
   };
+  // Sắp xếp phía server: chưa sắp → A→Z → Z→A → bỏ; về trang 1
+  const curSort = params.get("sort");
+  const curDir = params.get("dir") === "asc" ? "asc" : "desc";
+  const sortBy = (key: string) => {
+    const q = new URLSearchParams(params.toString());
+    q.delete("page");
+    if (curSort !== key) {
+      q.set("sort", key);
+      q.set("dir", "asc");
+    } else if (curDir === "asc") q.set("dir", "desc");
+    else {
+      q.delete("sort");
+      q.delete("dir");
+    }
+    router.push(`${pathname}${q.size ? `?${q}` : ""}`);
+  };
 
   return (
     <div className="space-y-3">
@@ -118,15 +144,33 @@ export function DataTable<T>({
         <THead>
           {table.getHeaderGroups().map((hg) => (
             <TR key={hg.id} className="hover:bg-transparent">
-              {hg.headers.map((h) => (
-                <TH
-                  key={h.id}
-                  {...stick(h.column.id, true)}
-                  style={{ width: (h.column.columnDef.meta as { width?: number } | undefined)?.width, minWidth: frozen.has(h.column.id) ? (h.column.columnDef.meta as { width?: number } | undefined)?.width : undefined, ...stick(h.column.id, true).style }}
-                >
-                  {h.isPlaceholder ? null : flexRender(h.column.columnDef.header, h.getContext())}
-                </TH>
-              ))}
+              {hg.headers.map((h) => {
+                const meta = h.column.columnDef.meta as ColumnMeta | undefined;
+                const label = h.isPlaceholder ? null : flexRender(h.column.columnDef.header, h.getContext());
+                const active = !!meta?.sortKey && curSort === meta.sortKey;
+                return (
+                  <TH
+                    key={h.id}
+                    style={{ width: meta?.width, ...stick(h.column.id, true).style }}
+                    className={cn(meta?.align === "right" && "text-right", stick(h.column.id, true).className)}
+                    aria-sort={active ? (curDir === "asc" ? "ascending" : "descending") : undefined}
+                  >
+                    {meta?.sortKey ? (
+                      <button
+                        type="button"
+                        onClick={() => sortBy(meta.sortKey!)}
+                        className={cn("inline-flex items-center gap-1 hover:text-foreground", active && "text-foreground")}
+                        title="Bấm để sắp xếp A→Z / Z→A"
+                      >
+                        {label}
+                        {active ? curDir === "asc" ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" /> : <ArrowUpDown className="size-3 opacity-40" />}
+                      </button>
+                    ) : (
+                      label
+                    )}
+                  </TH>
+                );
+              })}
             </TR>
           ))}
         </THead>
@@ -139,9 +183,18 @@ export function DataTable<T>({
             </TR>
           ) : (
             table.getRowModel().rows.map((row) => (
-              <TR key={row.id} data-state={row.getIsSelected() ? "selected" : undefined} className="group data-[state=selected]:bg-primary/5">
+              <TR
+                key={row.id}
+                data-state={row.getIsSelected() ? "selected" : undefined}
+                className="group data-[state=selected]:bg-primary/5"
+                onContextMenu={onRowContextMenu ? (e) => onRowContextMenu(row.original, e) : undefined}
+              >
                 {row.getVisibleCells().map((cell) => (
-                  <TD key={cell.id} {...stick(cell.column.id)}>
+                  <TD
+                    key={cell.id}
+                    style={stick(cell.column.id).style}
+                    className={cn((cell.column.columnDef.meta as ColumnMeta | undefined)?.align === "right" && "text-right", stick(cell.column.id).className)}
+                  >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </TD>
                 ))}
@@ -150,6 +203,7 @@ export function DataTable<T>({
           )}
         </TBody>
       </Table>
+      {footer}
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>Tổng {total.toLocaleString("vi-VN")} dòng</span>
         <div className="flex items-center gap-2">

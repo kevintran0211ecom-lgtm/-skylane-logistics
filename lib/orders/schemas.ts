@@ -3,8 +3,8 @@ import { z } from "zod";
 import { parseNumberCell } from "../pricing/import-excel";
 import type { DraftData } from "./import-parse";
 
-export const ORDER_STATUSES = ["Phát sinh", "Đã nhận kho", "Đã xuất hàng", "Đã giao hàng", "Hoàn"] as const;
-export type OrderStatus = (typeof ORDER_STATUSES)[number];
+import { ORDER_STATUSES, type OrderStatus } from "./status";
+export { ORDER_STATUSES, type OrderStatus };
 
 const code = (s: string) => s.trim().toUpperCase();
 const optional = z
@@ -64,6 +64,7 @@ export const createOrderSchema = z.object({
   receiverState: optional,
   receiverPostalCode: optional,
   goodsDescription: optional,
+  goodsNameEn: optional,
   hsCode: optional,
   declaredValueUsd: optional.refine((v) => v === null || !!parseNumberCell(v, "price"), "Giá trị khai báo không hợp lệ"),
   note: optional,
@@ -104,6 +105,7 @@ export function draftFromInput(d: CreateOrderInput): DraftData {
     receiverPhone: d.receiverPhone,
     receiverEmail: d.receiverEmail?.toLowerCase() ?? null,
     goodsDescription: d.goodsDescription,
+    goodsNameEn: d.goodsNameEn,
     hsCode: d.hsCode,
     declaredValueUsd: d.declaredValueUsd?.replace(",", ".") ?? null,
     note: d.note,

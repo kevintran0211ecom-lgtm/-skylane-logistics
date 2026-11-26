@@ -32,7 +32,7 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
         description="Mỗi lần nhập bảng giá tạo một phiên bản theo ngày hiệu lực; phiên bản cũ được giữ nguyên để tính đúng đơn quá khứ."
         actions={
           <>
-            <a href="/templates/mau-bang-gia.xlsx" download className={buttonVariants({ variant: "outline" })}>
+            <a href="/api/bang-gia/mau-xlsx" className={buttonVariants({ variant: "outline" })}>
               <Download /> File mẫu
             </a>
             {can(user.role, "pricing.manage") && (
