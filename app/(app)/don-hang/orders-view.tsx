@@ -68,6 +68,7 @@ export function OrdersView(props: {
     () => [
       {
         header: "Mã vận đơn",
+        meta: { width: 150 },
         cell: ({ row: { original: o } }) => (
           <div className="min-w-32">
             <span className="flex items-center gap-1 font-medium">
@@ -213,6 +214,7 @@ export function OrdersView(props: {
         page={props.page}
         pageSize={props.pageSize}
         empty={props.q || props.status ? "Không có vận đơn phù hợp." : "Chưa có vận đơn. Đơn mới được nhận & xác nhận ở mục Đơn hàng dự báo."}
+        freeze={1}
         selection={canBulk ? { getRowId: (r) => String(r.id), selected, onChange: setSelected } : undefined}
       />
       <p className="mt-2 text-xs text-muted-foreground">* Giá trị đang ghi đè thủ công (không tự tính lại). Biểu tượng khóa = đơn đã khóa giá.</p>

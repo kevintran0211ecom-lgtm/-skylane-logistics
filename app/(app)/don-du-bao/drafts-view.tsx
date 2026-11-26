@@ -73,6 +73,7 @@ export function DraftsView(props: {
     () => [
       {
         header: "Mã vận đơn",
+        meta: { width: 140 },
         cell: ({ row: { original: d } }) => (
           <div className="min-w-28">
             <span className="font-medium">{d.billCode}</span>
@@ -249,6 +250,7 @@ export function DraftsView(props: {
         page={props.page}
         pageSize={props.pageSize}
         empty={pending ? "Không có đơn chờ xác nhận." : "Không có đơn."}
+        freeze={1}
         selection={canSelect ? { getRowId: (r) => String(r.id), selected, onChange: setSelected } : undefined}
       />
 

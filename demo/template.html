@@ -41,6 +41,13 @@ table.t td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:midd
 table.t tr:hover td{background:color-mix(in srgb,var(--soft) 50%,transparent)}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .scroll{overflow:auto}
+table.t .fz{position:sticky;left:0;z-index:2;background:var(--card)}
+table.t th.fz{z-index:3;background:var(--soft)}
+table.t .fzc{width:36px;min-width:36px;max-width:36px}
+table.t .fz2{left:36px}
+table.t .fzl{box-shadow:inset -1px 0 0 var(--line),8px 0 8px -8px rgba(0,0,0,.25)}
+table.t tr:hover td.fz{background:color-mix(in srgb,var(--soft) 50%,var(--card))}
+table.t tr.sel td.fz{background:var(--soft)}
 .b{display:inline-flex;align-items:center;border-radius:6px;padding:1px 8px;font-size:12px;font-weight:500;white-space:nowrap}
 .b-muted{background:light-dark(#f1f5f9,#1e293b);color:var(--muted)}.b-info{background:light-dark(#dbeafe,#1e3a8a);color:light-dark(#1e40af,#bfdbfe)}
 .b-ok{background:light-dark(#d1fae5,#064e3b);color:light-dark(#065f46,#a7f3d0)}.b-warn{background:light-dark(#fef3c7,#78350f);color:light-dark(#92400e,#fde68a)}
