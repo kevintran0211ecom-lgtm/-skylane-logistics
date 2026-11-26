@@ -983,8 +983,8 @@ function addProofs(files) {
 // =============================================================================
 function vCustomers() {
   const m = can("catalog.manage");
-  return head("Khách hàng", "Sale phụ trách, nhóm giá mặc định và % điều chỉnh quyết định giá bán.") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã KH</th><th>Tên</th><th>Sale phụ trách</th><th>Nhóm giá</th><th class="num">Điều chỉnh</th><th class="num">Số đơn</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
-  ${S.customers.map((c) => `<tr><td><b>${c.code}</b></td><td>${esc(c.name)}</td><td>${esc(S.users.find((u) => u.id === c.saleId)?.name || "—")}</td><td>${c.group ? badge(c.group, "info") : '<span class="muted">Chung</span>'}</td><td class="num">${Number(c.adjust) > 0 ? "+" : ""}${Number(c.adjust)}%</td><td class="num">${S.orders.filter((o) => o.customer === c.code).length}</td>${m ? `<td><button class="btn g sm" data-a="cu-edit" data-id="${c.code}">Sửa</button></td>` : ""}</tr>`).join("")}</tbody></table></div>
+  return head("Khách hàng", "Sale phụ trách, nhóm giá mặc định và % điều chỉnh quyết định giá bán.", m ? `<button class="btn" data-a="cu-edit" data-id="">+ Thêm khách hàng</button>` : "") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã KH</th><th>Tên</th><th>Liên hệ</th><th>Sale phụ trách</th><th>Nhóm giá</th><th class="num">Điều chỉnh</th><th class="num">Số đơn</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
+  ${S.customers.map((c) => `<tr><td><b>${c.code}</b></td><td>${esc(c.name)}</td><td class="text-xs">${esc(c.phone || "")}${c.email ? `<div class="muted">${esc(c.email)}</div>` : ""}${!c.phone && !c.email ? '<span class="muted">—</span>' : ""}</td><td>${esc(S.users.find((u) => u.id === c.saleId)?.name || "—")}</td><td>${c.group ? badge(c.group, "info") : '<span class="muted">Chung</span>'}</td><td class="num">${Number(c.adjust) > 0 ? "+" : ""}${Number(c.adjust)}%</td><td class="num">${S.orders.filter((o) => o.customer === c.code).length}</td>${m ? `<td><button class="btn g sm" data-a="cu-edit" data-id="${c.code}">Sửa</button></td>` : ""}</tr>`).join("")}</tbody></table></div>
   <p class="mt-2 text-xs muted">Ưu tiên giá bán: giá riêng Mã KH (SKL116 có giá riêng tuyến VNFZZXR) → bảng giá riêng của nhóm × (1 + % khách) → bảng giá chung × (1 + % nhóm) × (1 + % khách). Sửa sẽ tính lại ngay đơn chưa khóa giá.</p>`;
 }
 function vGroups() {
@@ -1215,21 +1215,36 @@ const A = {
     } catch (e) { toast(e.message, "bad"); }
   },
   "cu-edit": (el) => {
-    const c = cust(el.dataset.id);
-    openDialog(`Sửa khách hàng ${c.code}`, `<div class="grid gap-3" id="f-cu" data-id="${c.code}"><label class="f"><span>Tên</span><input class="inp" name="name" value="${esc(c.name)}"></label>
-    <label class="f"><span>Sale phụ trách</span><select class="inp" name="saleId"><option value="">— Chưa gán —</option>${S.users.filter((u) => u.role === "SALE").map((u) => `<option value="${u.id}" ${u.id === c.saleId ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
-    <label class="f"><span>Nhóm giá</span><select class="inp" name="group"><option value="">Bảng giá chung</option>${S.groups.filter((g) => g.active).map((g) => `<option value="${g.code}" ${c.group === g.code ? "selected" : ""}>${esc(g.name)} (${g.code}) · ${Number(g.adjust) > 0 ? "+" : ""}${Number(g.adjust)}%</option>`).join("")}</select></label>
-    <label class="f"><span>% riêng của khách (áp thêm trên giá nhóm / giá chung)</span><input class="inp" name="adjust" value="${esc(c.adjust)}"></label>
-    <label class="f"><span>Link Google Sheet nhập đơn (SkyLane cấp cho khách)</span><input class="inp" name="sheet" value="${esc(c.sheet || "")}" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
-    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="cu-save">Lưu & tính lại giá</button></div></div>`);
+    const c = el.dataset.id ? cust(el.dataset.id) : null, isNew = !c, x = c || { code: "", name: "", phone: "", email: "", address: "", saleId: null, group: null, adjust: "0", sheet: "", currency: "VND", note: "" };
+    openDialog(isNew ? "Thêm khách hàng mới" : `Sửa khách hàng ${x.code}`, `<div class="grid gap-3" id="f-cu" data-id="${esc(c?.code || "")}">
+    <div class="grid gap-3 sm:grid-cols-2">
+    <label class="f"><span>Mã khách hàng *</span><input class="inp uppercase" name="code" value="${esc(x.code)}" ${isNew ? "" : "readonly"} placeholder="VD: SKL200"></label>
+    <label class="f"><span>Tên khách hàng *</span><input class="inp" name="name" value="${esc(x.name)}"></label>
+    <label class="f"><span>Số điện thoại</span><input class="inp" name="phone" value="${esc(x.phone || "")}"></label>
+    <label class="f"><span>Email</span><input class="inp" name="email" value="${esc(x.email || "")}"></label>
+    <label class="f sm:col-span-2"><span>Địa chỉ</span><input class="inp" name="address" value="${esc(x.address || "")}"></label>
+    <label class="f"><span>Sale phụ trách</span><select class="inp" name="saleId"><option value="">— Chưa gán —</option>${S.users.filter((u) => u.role === "SALE").map((u) => `<option value="${u.id}" ${u.id === x.saleId ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>
+    <label class="f"><span>Tiền tệ</span><select class="inp" name="currency">${["VND", "USD"].map((k) => `<option ${k === (x.currency || "VND") ? "selected" : ""}>${k}</option>`).join("")}</select></label>
+    <label class="f"><span>Nhóm giá</span><select class="inp" name="group"><option value="">Bảng giá chung</option>${S.groups.filter((g) => g.active).map((g) => `<option value="${g.code}" ${x.group === g.code ? "selected" : ""}>${esc(g.name)} (${g.code}) · ${Number(g.adjust) > 0 ? "+" : ""}${Number(g.adjust)}%</option>`).join("")}</select></label>
+    <label class="f"><span>% riêng của khách (áp thêm trên giá nhóm / giá chung)</span><input class="inp" name="adjust" value="${esc(x.adjust)}"></label>
+    <label class="f sm:col-span-2"><span>Link Google Sheet nhập đơn (SkyLane cấp cho khách)</span><input class="inp" name="sheet" value="${esc(x.sheet || "")}" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
+    <label class="f sm:col-span-2"><span>Ghi chú</span><textarea class="inp" name="note" rows="2">${esc(x.note || "")}</textarea></label></div>
+    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="cu-save">${isNew ? "Thêm khách hàng" : "Lưu & tính lại giá"}</button></div></div>`, true);
   },
   "cu-save": () => {
-    const box = $("#f-cu"), c = cust(box.dataset.id), v = (n) => $(`[name=${n}]`, box).value.trim();
-    const adj = v("adjust").replace(",", ".");
+    const box = $("#f-cu"), v = (n) => $(`[name=${n}]`, box).value.trim();
+    const code = (box.dataset.id || v("code")).toUpperCase(), adj = v("adjust").replace(",", ".") || "0";
+    if (!code) return toast("Nhập mã khách hàng.", "bad");
+    if (code.includes("|")) return toast("Mã khách hàng không được chứa ký tự |.", "bad");
+    if (!v("name")) return toast("Nhập tên khách hàng.", "bad");
+    if (v("email") && !/^\S+@\S+\.\S+$/.test(v("email"))) return toast("Email không hợp lệ.", "bad");
     if (!/^-?\d+(\.\d+)?$/.test(adj) || Number(adj) <= -100) return toast("% điều chỉnh không hợp lệ.", "bad");
-    Object.assign(c, { name: v("name") || c.name, saleId: v("saleId") || null, group: v("group") || null, adjust: adj, sheet: v("sheet") });
+    let c = cust(code);
+    if (!box.dataset.id && c) return toast(`Mã khách hàng ${code} đã tồn tại.`, "bad");
+    if (!c) S.customers.push((c = { code }));
+    Object.assign(c, { name: v("name"), phone: v("phone"), email: v("email").toLowerCase(), address: v("address"), saleId: v("saleId") || null, currency: v("currency"), group: v("group") || null, adjust: adj, sheet: v("sheet"), note: v("note") });
     const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => o.customer === c.code && reprice(S, o, cat) && n++);
-    save(); closeDialog(); render(); toast(`Đã lưu ${c.code}; tính lại giá ${n} đơn chưa khóa.`);
+    save(); closeDialog(); render(); toast(box.dataset.id ? `Đã lưu ${c.code}; tính lại giá ${n} đơn chưa khóa.` : `Đã thêm khách hàng ${c.code} — ${c.name}.`);
   },
   "gr-edit": (el) => {
     const g = S.groups.find((x) => x.code === el.dataset.id);
