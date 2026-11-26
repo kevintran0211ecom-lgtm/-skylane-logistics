@@ -82,7 +82,7 @@ export function PriceGroupsView({ rows, canManage }: { rows: PriceGroupRow[]; ca
       <Dialog
         open={editing !== null}
         onOpenChange={(o) => !o && setEditing(null)}
-        title={editing === "new" ? "Thêm nhóm giá" : `Sửa nhóm giá ${editing && editing !== "new" ? editing.code : ""}`}
+        title={editing === "new" ? "Thêm nhóm giá" : `Sửa nhóm giá ${editing?.code ?? ""}`}
         className="max-w-lg"
       >
         {editing !== null && <GroupForm key={editing === "new" ? "new" : editing.code} row={editing === "new" ? null : editing} onDone={() => setEditing(null)} />}

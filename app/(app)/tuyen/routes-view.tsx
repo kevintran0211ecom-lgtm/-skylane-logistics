@@ -77,7 +77,7 @@ export function RoutesView({ rows, suppliers, canManage }: { rows: RouteRow[]; s
       <Dialog
         open={editing !== null}
         onOpenChange={(o) => !o && setEditing(null)}
-        title={editing === "new" ? "Thêm tuyến vận chuyển" : `Sửa tuyến ${editing && editing !== "new" ? editing.routeCode : ""}`}
+        title={editing === "new" ? "Thêm tuyến vận chuyển" : `Sửa tuyến ${editing?.routeCode ?? ""}`}
         className="max-w-xl"
       >
         {editing !== null && (

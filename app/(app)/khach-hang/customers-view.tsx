@@ -85,7 +85,7 @@ export function CustomersView(props: {
       <Dialog
         open={editing !== null}
         onOpenChange={(o) => !o && setEditing(null)}
-        title={editing === "new" ? "Thêm khách hàng" : `Sửa khách hàng ${editing && editing !== "new" ? editing.customerCode : ""}`}
+        title={editing === "new" ? "Thêm khách hàng" : `Sửa khách hàng ${editing?.customerCode ?? ""}`}
         className="max-w-2xl"
       >
         {editing !== null && (
