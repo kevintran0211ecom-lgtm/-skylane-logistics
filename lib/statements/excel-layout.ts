@@ -182,7 +182,7 @@ export function layoutStatementSheet(wb: ExcelJS.Workbook, st: StatementSheetDat
     ws.addImage(id, { tl: { col: 0.15, row: 0.08 }, ext: { width: 80, height: 76 } });
   }
 
-  // QR MSB (VietQR có sẵn số tiền & nội dung) ở cuối bảng kê, cạnh thông tin tài khoản
+  // QR chuyển khoản mặc định của ngân hàng (MSB) ở cuối bảng kê, cạnh thông tin tài khoản
   if (st.status !== "CANCELLED" && images.qr) {
     const id = wb.addImage({ buffer: images.qr.buffer as unknown as ExcelJS.Buffer, extension: images.qr.extension });
     ws.addImage(id, { tl: { col: 4.2, row: bankStart - 1 }, ext: { width: 140, height: 140 } });

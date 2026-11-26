@@ -1106,7 +1106,7 @@ async function downloadStatementXlsx(s) {
   const c = cust(s.customer);
   const images = { logo: { buffer: b64bytes(LOGO), extension: "png" } };
   if (s.status === "ACTIVE") {
-    try { const q = qrcode(0, "M"); q.addData(SF.vietQrPayload({ amount: s.total - s.paid, note: s.no })); q.make(); images.qr = { buffer: b64bytes(q.createDataURL(8, 4)), extension: "gif" }; } catch {}
+    try { const q = qrcode(0, "M"); q.addData(SF.BANK_QR_PAYLOAD); q.make(); images.qr = { buffer: b64bytes(q.createDataURL(8, 4)), extension: "gif" }; } catch {}
   }
   const wb = new ExcelJS.Workbook();
   XL.layoutStatementSheet(wb, {
@@ -1131,7 +1131,7 @@ function vStatementNew() {
 }
 function vStatement(s) {
   const c = cust(s.customer);
-  const payload = SF.vietQrPayload({ amount: s.total - s.paid, note: s.no });
+  const payload = SF.BANK_QR_PAYLOAD; // QR mặc định của ngân hàng (cố định)
   let qr = `<p class="text-xs" style="word-break:break-all">${esc(payload)}</p>`;
   try { const q = qrcode(0, "M"); q.addData(payload); q.make(); qr = q.createSvgTag({ cellSize: 3, margin: 2, scalable: true }); } catch {}
   const NOTES = ["Để bảo vệ quyền lợi của quý khách hàng và tránh ảnh hưởng thời gian giao hàng, quý khách hàng vui lòng đối chiếu và thanh toán số tiền trên trong đúng thời gian quy định.", "Trong trường hợp quý khách hàng không thanh toán kịp thời dẫn đến việc giao hàng bị chậm trễ hoặc các vấn đề phát sinh khác, công ty chúng tôi không chịu bất kỳ trách nhiệm nào."];
@@ -1139,7 +1139,7 @@ function vStatement(s) {
   return `<button class="btn g sm mb-2" data-a="st-back">‹ Bảng kê</button>` + head(s.no, s.name, `<button class="btn" data-a="st-xlsx" data-id="${s.id}">⬇ Tải Excel (.xlsx)</button>${s.status === "ACTIVE" && can("statements.manage") ? `<button class="btn o" data-a="st-cancel" data-id="${s.id}" ${s.paid > 0 ? 'disabled title="Đã có thanh toán"' : ""}>Hủy bảng kê</button>` : ""}`) + `
   ${s.status === "CANCELLED" ? `<div class="card mb-3 p-3" style="border-color:#dc2626;color:#dc2626">Đã hủy — ${esc(s.cancelReason || "không ghi lý do")}. Các đơn không thuộc bảng kê hiệu lực khác đã về “Chưa thanh toán”.</div>` : ""}
   <div class="card mb-3 grid grid-cols-2 gap-3 p-4 text-sm sm:grid-cols-4"><div><p class="text-xs muted">Tổng tiền</p><b style="color:var(--brand)">${money(s.total)} VND</b></div><div><p class="text-xs muted">Đã thu</p>${money(s.paid)}</div><div><p class="text-xs muted">Còn lại</p>${money(s.total - s.paid)}</div><div><p class="text-xs muted">Công nợ</p>${badge(s.debt, DEBT_TONE[s.debt])}</div></div>
-  <p class="mb-2 text-xs muted">Xem trước bảng kê (bố cục mẫu SkyLane). Bấm “Tải Excel (.xlsx)” để tải file Excel có logo và mã QR chuyển khoản MSB.</p>
+  <p class="mb-2 text-xs muted">Xem trước bảng kê (bố cục mẫu SkyLane). Bấm “Tải Excel (.xlsx)” để tải file Excel có logo và mã QR chuyển khoản MSB (QR mặc định của ngân hàng — khách nhập số tiền và nội dung là mã bảng kê).</p>
   <div class="scroll rounded-lg border line"><div class="inv relative p-6" style="min-width:980px">
     <img src="${LOGO}" alt="" width="64" height="60" style="position:absolute;left:18px;top:14px">
     <p style="text-align:center;font-size:24px;font-weight:700;margin:6px 0 2px">CÔNG TY TNHH SKYLANE LOGISTICS</p>

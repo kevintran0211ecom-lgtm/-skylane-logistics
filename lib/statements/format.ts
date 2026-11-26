@@ -49,18 +49,9 @@ export const transferNote = (s: string) =>
     .trim()
     .slice(0, 25);
 
-export function vietQrPayload(opts: { amount?: string | number | null; note?: string | null } = {}): string {
-  const amount = opts.amount ? String(Math.round(Number(opts.amount))) : "";
-  const merchant = tlv("00", "A000000727") + tlv("01", tlv("00", BANK.bankBin) + tlv("01", BANK.accountNo)) + tlv("02", "QRIBFTTA");
-  let body =
-    tlv("00", "01") +
-    tlv("01", amount && amount !== "0" ? "12" : "11") +
-    tlv("38", merchant) +
-    tlv("53", "704") +
-    (amount && amount !== "0" ? tlv("54", amount) : "") +
-    tlv("58", "VN");
-  const note = opts.note ? transferNote(opts.note) : "";
-  if (note) body += tlv("62", tlv("08", note));
-  body += "6304";
-  return body + crc16(body);
-}
+/**
+ * QR chuyển khoản MẶC ĐỊNH của ngân hàng (VietQR/NAPAS tĩnh — MSB 3812042003 HOANG THU THAO),
+ * giải mã nguyên văn từ ảnh QR do ngân hàng cấp. Không kèm số tiền / nội dung: khách quét rồi
+ * tự nhập số tiền và nội dung chuyển khoản (mã bảng kê) như ghi trên hóa đơn.
+ */
+export const BANK_QR_PAYLOAD = "00020101021238540010A00000072701240006970426011038120420030208QRIBFTTA530370454005802VN62150107NPS686908006304e593";

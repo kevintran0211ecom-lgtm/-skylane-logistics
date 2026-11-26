@@ -55,7 +55,7 @@ Ma trận quyền nằm duy nhất ở `lib/auth/permissions.ts` (có test) và 
 | Tổng quan | `/dashboard` | Doanh thu, giá vốn, lợi nhuận theo ngày/tháng (biểu đồ + bảng), tổng công nợ phải thu (đã/chưa lên bảng kê), lọc theo KH & Sale |
 | Người dùng | `/nguoi-dung` | Admin tạo tài khoản Supabase Auth, gán vai trò, khóa/mở |
 | Vận đơn | `/don-hang` | Phân trang server, tìm theo mã vận đơn/tracking/KH, tab 5 trạng thái, tạo đơn nhiều kiện, import Excel/CSV/Google Sheet (chặn trùng order_key), Sửa đổi hàng loạt |
-| Bảng kê | `/bang-ke` | Lọc đơn chưa lên bảng kê theo KH + ngày gửi → tạo bảng kê `SKLddMMyyXXXX` (snapshot, chuyển “xuất bảng kê”, khóa giá — 1 transaction); xuất `.xlsx` mẫu SkyLane (`/api/bang-ke/[id]/xlsx`, logo + VietQR MSB); hủy bảng kê |
+| Bảng kê | `/bang-ke` | Lọc đơn chưa lên bảng kê theo KH + ngày gửi → tạo bảng kê `SKLddMMyyXXXX` (snapshot, chuyển “xuất bảng kê”, khóa giá — 1 transaction); xuất `.xlsx` mẫu SkyLane (`/api/bang-ke/[id]/xlsx`, logo + QR ngân hàng MSB mặc định); hủy bảng kê |
 | Đối soát thu tiền | `/doi-soat` | 2 cột: phiếu thu `SKLTHUddMMyyXXX` (format nghìn, đọc bằng chữ, dán ảnh Ctrl+V → Supabase Storage) / công nợ + gợi ý khớp tiền (chính xác → gộp → FIFO); lưu 1 transaction, dư → Thu thừa |
 | Tra cứu giá gốc | `/bao-gia` | So sánh mọi tuyến theo điểm đến, cân, kích thước/CBM, ngày áp giá |
 | Import Excel | `/bang-gia/import` | 2 bước: Xem trước → Xác nhận. Bắt buộc Ngày hiệu lực; file mẫu tải ở `/api/bang-gia/mau-xlsx` (sinh từ `lib/pricing/template.ts`) |

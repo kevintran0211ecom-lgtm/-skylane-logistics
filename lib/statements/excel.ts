@@ -3,9 +3,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import ExcelJS from "exceljs";
 import QRCode from "qrcode";
-import { vietQrPayload } from "./format";
+import { BANK_QR_PAYLOAD } from "./format";
 import { layoutStatementSheet, type StatementImages } from "./excel-layout";
 import type { StatementDetail } from "./service";
+
+let qrCache: Buffer | null = null;
+const bankQrPng = async () => (qrCache ??= await QRCode.toBuffer(BANK_QR_PAYLOAD, { type: "png", width: 300, margin: 1, errorCorrectionLevel: "M" }));
 
 /** Tạo file .xlsx bảng kê theo đúng mẫu hóa đơn SkyLane (bố cục ở excel-layout.ts, dùng chung với bản chạy thử) */
 export async function buildStatementXlsx(st: StatementDetail): Promise<Buffer> {
@@ -16,8 +19,8 @@ export async function buildStatementXlsx(st: StatementDetail): Promise<Buffer> {
     // thiếu file logo → vẫn xuất bảng kê
   }
   if (st.status !== "CANCELLED") {
-    const payload = vietQrPayload({ amount: st.currency === "VND" ? st.balanceAmount : null, note: st.statementNo });
-    images.qr = { buffer: await QRCode.toBuffer(payload, { type: "png", width: 300, margin: 1, errorCorrectionLevel: "M" }), extension: "png" };
+    // QR mặc định của ngân hàng (cố định) — khách quét rồi tự nhập số tiền & nội dung (mã bảng kê)
+    images.qr = { buffer: await bankQrPng(), extension: "png" };
   }
   const wb = new ExcelJS.Workbook();
   layoutStatementSheet(
