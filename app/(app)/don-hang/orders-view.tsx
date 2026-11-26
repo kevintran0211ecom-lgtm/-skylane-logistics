@@ -25,7 +25,7 @@ import { OrderDetailForm } from "./order-detail-form";
 import type { BulkField } from "@/lib/orders/schemas";
 
 export type RouteOption = { code: string; name: string; serviceType: string };
-export type CustomerOption = { code: string; name: string; hasSync: boolean };
+export type CustomerOption = { code: string; name: string; hasSync: boolean; sheetUrl?: string | null };
 
 export const STATUS_TONE: Record<OrderStatus, "muted" | "info" | "warning" | "success" | "danger"> = {
   "Phát sinh": "muted",

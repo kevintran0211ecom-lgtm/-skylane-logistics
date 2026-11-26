@@ -34,8 +34,9 @@ export default async function DraftsPage({ searchParams }: { searchParams: Promi
         page={page}
         pageSize={PAGE_SIZE}
         routes={routes}
-        customers={customers.map((c) => ({ code: c.code, name: c.name, hasSync: !!c.syncConfig?.url }))}
+        customers={customers.map((c) => ({ code: c.code, name: c.name, hasSync: !!c.syncConfig?.url, sheetUrl: c.syncConfig?.url ?? null }))}
         canManage={can(user.role, "drafts.manage")}
+        masterSheetUrl={process.env.ORDER_TEMPLATE_SHEET_URL || null}
       />
     </>
   );

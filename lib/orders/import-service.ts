@@ -3,6 +3,7 @@ import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { customers, orderDrafts, orders, routes } from "@/drizzle/schema";
 import { readWorkbook } from "@/lib/pricing/read-xlsx";
+import { detectTemplateCustomer } from "./template";
 import type { Cell } from "@/lib/pricing/import-excel";
 import { parseCsv, parseOrderSheet, parseSheetUrl, type OrderDraft, type OrderParseResult } from "./import-parse";
 import { stageDrafts, type StageResult } from "./drafts-service";
@@ -56,14 +57,15 @@ export function readOrderImportForm(fd: FormData): { options: OrderImportOptions
   };
 }
 
-async function loadRows(o: OrderImportOptions, file: File | null): Promise<{ rows: Cell[][]; label: string }> {
+async function loadRows(o: OrderImportOptions, file: File | null): Promise<{ rows: Cell[][]; label: string; templateCustomer?: string | null }> {
   if (o.source === "FILE" && file) {
     if (/\.csv$/i.test(file.name)) return { rows: parseCsv((await file.text()).replace(/^﻿/, "")), label: file.name };
     const sheets = await readWorkbook(await file.arrayBuffer());
     const hasHeader = (rows: Cell[][]) => !parseOrderSheet(rows.slice(0, 16)).errors.some((e) => e.message.startsWith("Không tìm thấy"));
-    const pick = sheets.find((s) => hasHeader(s.rows)) ?? sheets[0];
+    const pick = sheets.find((s) => s.name.trim().toUpperCase() === "DON" && hasHeader(s.rows)) ?? sheets.find((s) => hasHeader(s.rows)) ?? sheets[0];
     if (!pick) throw new OrderImportError("File không có sheet nào.");
-    return { rows: pick.rows, label: `${file.name} · ${pick.name}` };
+    // File mẫu SkyLane cấp cho khách (kể cả tải từ Google Sheet) ghi sẵn mã khách ở sheet "Hướng dẫn"
+    return { rows: pick.rows, label: `${file.name} · ${pick.name}`, templateCustomer: detectTemplateCustomer(sheets, file.name) };
   }
 
   // Google Sheet: lấy link nhập tay, hoặc link nguồn đồng bộ của khách hàng
@@ -94,8 +96,11 @@ async function loadRows(o: OrderImportOptions, file: File | null): Promise<{ row
 }
 
 async function analyze(o: OrderImportOptions, file: File | null) {
-  const { rows, label } = await loadRows(o, file);
-  const parsed: OrderParseResult = parseOrderSheet(rows, { defaultCustomerCode: o.defaultCustomerCode });
+  const { rows, label, templateCustomer } = await loadRows(o, file);
+  const chosen = o.defaultCustomerCode?.trim().toUpperCase() || null;
+  if (templateCustomer && chosen && templateCustomer !== chosen)
+    throw new OrderImportError(`File này là mẫu nhập đơn của khách ${templateCustomer}, nhưng bạn đang chọn ${chosen}. Chọn đúng khách hoặc để trống ô khách hàng.`);
+  const parsed: OrderParseResult = parseOrderSheet(rows, { defaultCustomerCode: chosen ?? templateCustomer });
   const errors = [...parsed.errors];
   const drafts = parsed.drafts;
 

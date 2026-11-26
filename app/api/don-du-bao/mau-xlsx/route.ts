@@ -1,38 +1,41 @@
 import ExcelJS from "exceljs";
+import { and, eq } from "drizzle-orm";
 import { authorize } from "@/lib/auth/session";
-import { ORDER_TEMPLATE_HEADERS, ORDER_TEMPLATE_NOTES, ORDER_TEMPLATE_SAMPLE, ORDER_TEMPLATE_WIDTHS } from "@/lib/orders/template";
+import { db } from "@/lib/db";
+import { customers, routes } from "@/drizzle/schema";
+import { layoutOrderTemplate, orderTemplateFilename } from "@/lib/orders/template";
 
 export const runtime = "nodejs";
 
-/** File mẫu nhập vận đơn (.xlsx) — đúng cột tab DON của file SKL116 */
-export async function GET() {
+/**
+ * File mẫu nhập vận đơn (.xlsx) — đúng cột tab DON của file SKL116.
+ * ?customer=SKL126 → mẫu riêng cho khách (ghi mã khách ở sheet Hướng dẫn để import tự nhận khách).
+ */
+export async function GET(req: Request) {
+  let user;
   try {
-    await authorize("drafts.manage");
+    user = await authorize("drafts.manage");
   } catch {
     return new Response("Không có quyền", { status: 403 });
   }
+  const code = new URL(req.url).searchParams.get("customer")?.trim().toUpperCase() || null;
+  const [cust] = code
+    ? await db
+        .select({ name: customers.name })
+        .from(customers)
+        .where(and(eq(customers.customerCode, code), user.saleScope ? eq(customers.saleUserId, user.saleScope) : undefined))
+    : [];
+  if (code && !cust) return new Response("Không tìm thấy khách hàng", { status: 404 });
+  const routeRows = await db.select({ c: routes.routeCode }).from(routes).where(eq(routes.isActive, true));
+
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("DON", { views: [{ state: "frozen", ySplit: 1 }] });
-  ws.addRow([...ORDER_TEMPLATE_HEADERS]);
-  ws.addRow(ORDER_TEMPLATE_SAMPLE);
-  ws.columns.forEach((c, i) => (c.width = ORDER_TEMPLATE_WIDTHS[i] ?? 12));
-  const head = ws.getRow(1);
-  head.font = { bold: true, color: { argb: "FFFFFFFF" } };
-  head.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F3A8A" } };
-  head.alignment = { vertical: "middle", wrapText: true };
-  head.height = 30;
-  ws.getColumn(18).numFmt = "0.000";
-
-  const guide = wb.addWorksheet("Hướng dẫn");
-  guide.getColumn(1).width = 110;
-  guide.addRow(["HƯỚNG DẪN NHẬP ĐƠN — SKYLANE LOGISTICS"]).font = { bold: true, size: 13 };
-  for (const n of ORDER_TEMPLATE_NOTES) guide.addRow([`• ${n}`]);
-
+  layoutOrderTemplate(wb, { customerCode: code, customerName: cust?.name, routes: routeRows.map((r) => r.c) });
   const buf = await wb.xlsx.writeBuffer();
+  const filename = orderTemplateFilename(code, cust?.name);
   return new Response(new Uint8Array(buf as ArrayBuffer), {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="Mau-nhap-don-SkyLane.xlsx"`,
+      "Content-Disposition": `attachment; filename="${filename}"`,
       "Cache-Control": "no-store",
     },
   });

@@ -12,6 +12,8 @@ import { createOrderSchema, draftFromInput } from "./schemas";
 import { confirmDrafts, rejectDrafts, restoreDrafts, stageDrafts, type ConfirmResult, type StageResult } from "./drafts-service";
 import { OrderImportError, previewOrderImport, readOrderImportForm, stageOrderImport, type OrderImportPreview } from "./import-service";
 import { repriceMessage } from "./reprice";
+import { parseSheetUrl } from "./import-parse";
+import { eq } from "drizzle-orm";
 
 const done = () => {
   revalidatePath("/don-du-bao");
@@ -131,4 +133,30 @@ export async function restoreDraftsAction(_p: ActionState, fd: FormData): Promis
   } catch (e) {
     return { ok: false, error: dbErrorMessage(e, "Không khôi phục được đơn.") };
   }
+}
+
+// -----------------------------------------------------------------------------
+// Mẫu nhập đơn cho khách: lưu link Google Sheet của khách làm nguồn đồng bộ
+// -----------------------------------------------------------------------------
+export async function saveCustomerSheetLink(_p: ActionState, fd: FormData): Promise<ActionState> {
+  const g = await guard("drafts.manage");
+  if (!g.ok) return g;
+  const code = String(fd.get("customerCode") ?? "").trim().toUpperCase();
+  const url = String(fd.get("sheetUrl") ?? "").trim();
+  const tab = String(fd.get("sheetTab") ?? "").trim() || "DON";
+  if (!code) return { ok: false, error: "Chọn khách hàng.", fieldErrors: { customerCode: "Chọn khách hàng" } };
+  if (url && !parseSheetUrl(url)) return { ok: false, error: "Link Google Sheet không hợp lệ.", fieldErrors: { sheetUrl: "Dán link dạng https://docs.google.com/spreadsheets/d/…" } };
+  try {
+    const r = await db
+      .update(customers)
+      .set({ syncConfig: url ? { url, sheet: tab } : {} })
+      .where(eq(customers.customerCode, code))
+      .returning({ c: customers.customerCode });
+    if (!r.length) return { ok: false, error: `Không có khách hàng ${code}.` };
+  } catch (e) {
+    return { ok: false, error: dbErrorMessage(e, "Không lưu được link.") };
+  }
+  revalidatePath("/don-du-bao");
+  revalidatePath("/khach-hang");
+  return { ok: true, message: url ? `Đã lưu link Google Sheet cho ${code} — bấm “Đồng bộ Google Sheet” để lấy đơn.` : `Đã gỡ link Google Sheet của ${code}.` };
 }

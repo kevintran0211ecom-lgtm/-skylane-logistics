@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useActionState, useEffect, useMemo, useState } from "react";
 import type { ColumnDef, RowSelectionState } from "@tanstack/react-table";
-import { CheckCheck, FilePlus2, RefreshCw, RotateCcw, Search, Upload, X, XCircle } from "lucide-react";
+import { CheckCheck, FilePlus2, Link2, RefreshCw, RotateCcw, Search, Upload, X, XCircle } from "lucide-react";
+import { TemplateLinkForm } from "./template-link-form";
 import { DataTable } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -39,10 +40,11 @@ export function DraftsView(props: {
   pageSize: number;
   routes: RouteOption[];
   customers: CustomerOption[];
+  masterSheetUrl?: string | null;
   canManage: boolean;
 }) {
   const [selected, setSelected] = useState<RowSelectionState>({});
-  const [dialog, setDialog] = useState<"create" | "file" | "sheet" | "reject" | null>(null);
+  const [dialog, setDialog] = useState<"create" | "file" | "sheet" | "reject" | "template" | null>(null);
   const [confirmState, confirmAction, confirming] = useActionState(confirmDraftsAction, null);
   const [restoreState, restoreAction, restoring] = useActionState(restoreDraftsAction, null);
   const [rejectState, rejectAction, rejecting] = useActionState(rejectDraftsAction, null);
@@ -185,6 +187,9 @@ export function DraftsView(props: {
         </form>
         {props.canManage && (
           <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setDialog("template")}>
+              <Link2 /> Mẫu nhập đơn cho khách
+            </Button>
             <Button variant="outline" onClick={() => setDialog("sheet")}>
               <RefreshCw /> Đồng bộ Google Sheet
             </Button>
@@ -256,6 +261,15 @@ export function DraftsView(props: {
 
       <Dialog open={dialog === "create"} onOpenChange={(o) => !o && setDialog(null)} title="Nhập tay đơn nội bộ" className="max-w-3xl">
         <CreateOrderForm routes={props.routes} customers={props.customers} onDone={() => setDialog(null)} />
+      </Dialog>
+      <Dialog
+        open={dialog === "template"}
+        onOpenChange={(o) => !o && setDialog(null)}
+        title="Mẫu nhập đơn cho khách"
+        description="File Excel mẫu riêng của khách, link mẫu Google Sheet và lưu link khách gửi lại để đồng bộ."
+        className="max-w-2xl"
+      >
+        {dialog === "template" && <TemplateLinkForm customers={props.customers} masterSheetUrl={props.masterSheetUrl ?? null} onDone={() => setDialog(null)} />}
       </Dialog>
       <Dialog
         open={dialog === "file" || dialog === "sheet"}

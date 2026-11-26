@@ -59,9 +59,9 @@ export function ImportOrdersForm({
             <option value="SHEET">Google Sheet của khách</option>
           </NativeSelect>
         </Field>
-        <Field label="Khách hàng mặc định" htmlFor="customerCode" hint="Dùng khi file không có cột Mã khách hàng">
+        <Field label="Khách hàng mặc định" htmlFor="customerCode" hint="File mẫu SkyLane cấp cho khách tự nhận khách — để trống được">
           <NativeSelect id="customerCode" name="customerCode" value={customer} onChange={(e) => setCustomer(e.target.value)}>
-            <option value="">— Lấy theo cột trong file —</option>
+            <option value="">— Theo file (mẫu của khách / cột Mã KH) —</option>
             {customers.map((c) => (
               <option key={c.code} value={c.code}>
                 {c.code} — {c.name}

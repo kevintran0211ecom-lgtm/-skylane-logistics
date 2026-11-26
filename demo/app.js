@@ -3,7 +3,7 @@
 // Module thật của dự án (biên dịch từ lib/*.ts)
 // =============================================================================
 const E = __M.engine, IX = __M.importExcel, V = __M.versioning, IP = __M.importParse, SF = __M.statementFmt, RF = __M.receiptFmt, P = __M.permissions;
-const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate;
+const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -815,6 +815,34 @@ const ORDER_SAMPLE = [
   ["25/11/2026 10:20:00", "5", "#AP2004", "VNFZZXR", "20", "Mũ", "Ava Taylor", "USA", "1", "0,3", "20", "15", "10"],
   ["25/11/2026 10:21:00", "6", "#AP2001", "VNFZZXR", "20", "Quần áo", "David Lee", "US", "1", "0,786", "34", "23", "11"],
 ].map((r) => r.join("\t")).join("\n");
+// ---- Mẫu nhập đơn cho khách: file Excel riêng, link mẫu Google Sheet, lưu link khách gửi lại
+function templateDialog(code) {
+  const list = scopedCustomers(), c = list.find((x) => x.code === code) || list[0];
+  S.settings = S.settings || {};
+  const copyLink = OT.googleSheetCopyLink(S.settings.masterSheet);
+  const msg = OT.templateMessage({ customerCode: c.code, customerName: c.name, copyLink, sheetLink: c.sheet || null });
+  openDialog("Mẫu nhập đơn cho khách", `<div class="grid gap-4" id="f-tpl">
+    <label class="f"><span>Khách hàng</span><select class="inp" data-c="tpl-cust">${list.map((x) => `<option value="${x.code}" ${x.code === c.code ? "selected" : ""}>${x.code} — ${esc(x.name)}${x.sheet ? " (đã có link)" : ""}</option>`).join("")}</select></label>
+    <section class="card grid gap-2 p-4"><b class="text-sm">1. File Excel mẫu cho khách</b><p class="text-sm muted">Đúng cột tab DON, có danh sách tuyến thả xuống; ghi sẵn mã khách nên khi khách gửi lại (hoặc tải từ Google Sheet: Tệp → Tải xuống → Excel) bấm Import Excel là hệ thống tự nhận đúng khách.</p>
+      <div><button class="btn o sm" data-a="tpl-xlsx" data-id="${c.code}">⬇ ${esc(OT.orderTemplateFilename(c.code, c.name))}</button></div></section>
+    <section class="card grid gap-2 p-4"><b class="text-sm">2. Link mẫu Google Sheet</b>
+      <label class="f"><span>Google Sheet mẫu gốc của SkyLane (thiết lập 1 lần)</span><span class="flex gap-2"><input class="inp" id="tpl-master" value="${esc(S.settings.masterSheet || "")}" placeholder="https://docs.google.com/spreadsheets/d/…"><button class="btn o sm" data-a="tpl-master">Lưu</button></span>
+      <span class="text-xs muted">Tạo một lần: tải file mẫu ở bước 1 → tải lên Google Drive → Mở bằng Google Trang tính → Chia sẻ “Bất kỳ ai có đường liên kết — Người xem” → dán link vào đây.</span></label>
+      ${copyLink ? `<label class="f"><span>Link gửi khách — khách bấm là tạo ngay bản sao mẫu nhập đơn của mình</span><span class="flex gap-2"><input class="inp" readonly value="${esc(copyLink)}" style="font-family:ui-monospace,monospace;font-size:12px"><button class="btn o sm" data-a="tpl-copy" data-v="${esc(copyLink)}">Sao chép</button></span></label>` : ""}
+      <label class="f"><span>Tin nhắn gửi khách (Zalo / email)</span><textarea class="inp" rows="5" readonly style="font-size:12px">${esc(msg)}</textarea></label>
+      <div><button class="btn o sm" data-a="tpl-copy" data-v="${esc(msg)}">Sao chép tin nhắn</button></div></section>
+    <section class="card grid gap-2 p-4"><b class="text-sm">3. Link Google Sheet của khách (nguồn đồng bộ)</b>
+      <div class="grid gap-2 sm:grid-cols-[1fr_110px]"><label class="f"><span>Link khách gửi lại</span><input class="inp" id="tpl-url" value="${esc(c.sheet || "")}" placeholder="https://docs.google.com/spreadsheets/d/…"></label><label class="f"><span>Tab</span><input class="inp" id="tpl-tab" value="DON"></label></div>
+      <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Đóng</button><button class="btn" data-a="tpl-save" data-id="${c.code}">Lưu link cho khách</button></div></section>
+  </div>`, true);
+}
+async function downloadOrderTemplate(code) {
+  if (!window.ExcelJS) return toast("Chưa tải được thư viện Excel — kiểm tra kết nối mạng rồi thử lại.", "bad");
+  const c = cust(code), wb = new ExcelJS.Workbook();
+  OT.layoutOrderTemplate(wb, { customerCode: c.code, customerName: c.name, routes: S.routes.filter((r) => r.active !== false).map((r) => r.code) });
+  const name = OT.orderTemplateFilename(c.code, c.name);
+  if (await saveBlob(new Blob([await wb.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), name)) toast(`Đã tải ${name} — gửi cho khách điền rồi Import Excel.`);
+}
 function importDialog() {
   openDialog("Import đơn từ file Excel (mẫu SKL116)", `<div class="grid gap-3">
     <p class="text-sm muted">Chọn file <b>.xlsx</b> theo mẫu cột tab DON của file SKL116 (Thời gian phát sinh đơn, Mã vận đơn, Tuyến vận chuyển, … Dài, Rộng, Cao) — hoặc copy vùng dữ liệu rồi dán vào ô dưới. Cột nhận theo tên tiêu đề. Đơn hợp lệ vào <b>Đơn hàng dự báo</b> chờ xác nhận; đơn trùng order_key bị chặn.</p>
@@ -831,6 +859,10 @@ function readImportFile(file) {
   r.onload = () => {
     try {
       const wb = XLSX.read(r.result, { type: "array" });
+      // File mẫu SkyLane cấp cho khách (kể cả tải từ Google Sheet): mã khách ghi ở sheet "Hướng dẫn" → tự chọn khách
+      const tplCust = OT.detectTemplateCustomer(wb.SheetNames.map((n) => ({ name: n, rows: XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null }).slice(0, 12) })), file.name);
+      if (tplCust && S.customers.some((c) => c.code === tplCust)) { $("#imp-cust").value = tplCust; toast(`File mẫu nhập đơn của khách ${tplCust} — đã tự chọn khách hàng.`); }
+      else if (tplCust) toast(`File mẫu của khách ${tplCust} nhưng chưa có khách này trong Danh mục.`, "warn");
       const ws = wb.Sheets[wb.SheetNames.find((n) => n.trim().toUpperCase() === "DON") || wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
       $("#imp-text").value = rows.map((row) => row.map((v) => (v === null ? "" : String(v).replace(/\t|\n/g, " "))).join("\t")).join("\n");
@@ -873,7 +905,7 @@ function vDrafts() {
   const tabs = DRAFT_TABS.map(([k, l]) => `<button class="px-3 py-2 text-sm ${f.status === k ? "font-semibold" : "muted"}" style="border-bottom:2px solid ${f.status === k ? "var(--brand)" : "transparent"}" data-a="dr-tab" data-v="${k}">${l} <span class="text-xs">(${scoped.filter((x) => x.status === k).length})</span></button>`).join("");
   const bar = selectable && f.sel.size ? `<div class="card mb-3 flex flex-wrap items-center justify-between gap-2 p-3" style="position:sticky;top:0;z-index:5"><span>Đã chọn <b>${f.sel.size}</b> đơn <button class="btn g sm" data-a="dr-clear">Bỏ chọn</button></span><span class="flex gap-2">${f.status === "CHO_XAC_NHAN" ? `<button class="btn o" data-a="dr-reject">Loại</button><button class="btn" data-a="dr-confirm">Xác nhận ${f.sel.size} đơn → Vận đơn</button>` : `<button class="btn o" data-a="dr-restore">Đưa về chờ xác nhận</button>`}</span></div>` : "";
   return head("Đơn hàng dự báo", "Đơn khách nhập trên Google Sheet, file Excel hoặc nhập tay nội bộ vào đây trước. Kiểm tra, chọn đơn rồi bấm Xác nhận để chuyển sang Vận đơn.",
-    manage ? `<button class="btn o" data-a="sync-open">⟳ Đồng bộ Google Sheet</button><button class="btn o" data-a="imp-open">Import Excel</button><button class="btn" data-a="create-open">+ Nhập tay</button>` : "") + `
+    manage ? `<button class="btn o" data-a="tpl-open">🔗 Mẫu nhập đơn cho khách</button><button class="btn o" data-a="sync-open">⟳ Đồng bộ Google Sheet</button><button class="btn o" data-a="imp-open">Import Excel</button><button class="btn" data-a="create-open">+ Nhập tay</button>` : "") + `
   <div class="mb-3 flex flex-wrap border-b line">${tabs}</div>
   <div class="mb-3 flex flex-wrap items-center gap-2"><select class="inp" style="width:220px" data-c="dr-cust"><option value="">Tất cả khách hàng</option>${scopedCustomers().map((c) => `<option value="${c.code}" ${c.code === f.cust ? "selected" : ""}>${c.code} — ${esc(c.name)}</option>`).join("")}</select><input class="inp" style="max-width:320px" placeholder="Tìm mã vận đơn, mã/tên khách hàng" value="${esc(f.q)}" data-c="dr-q"></div>
   ${bar}
@@ -1332,6 +1364,21 @@ const A = {
     toast(o.locked ? "Đã lưu kiện — đơn đã khóa giá nên giữ nguyên cân & tiền." : `Đã lưu ${packages.length} kiện. Tính phí ${kg(before.billed)} → ${kg(o.billed)} kg${can("orders.viewMoney") ? `; giá bán ${money(before.sell)} → ${money(o.sell)}` : ""}.`);
   },
   "imp-open": () => { ui.impRows = null; ui.impLabel = null; importDialog(); },
+  "tpl-open": () => templateDialog(),
+  "tpl-xlsx": (el) => downloadOrderTemplate(el.dataset.id).catch((err) => toast("Không tạo được file mẫu: " + err.message, "bad")),
+  "tpl-copy": (el) => copyText(el.dataset.v, el.dataset.v.startsWith("http") ? "link mẫu" : "tin nhắn gửi khách"),
+  "tpl-master": () => {
+    const v = $("#tpl-master").value.trim();
+    if (v && !IP.parseSheetUrl(v)) return toast("Link Google Sheet không hợp lệ (dạng https://docs.google.com/spreadsheets/d/…).", "bad");
+    S.settings = S.settings || {}; S.settings.masterSheet = v; save();
+    templateDialog($('[data-c="tpl-cust"]').value); toast(v ? "Đã lưu Google Sheet mẫu gốc — link tạo bản sao đã sẵn sàng." : "Đã gỡ Google Sheet mẫu gốc.");
+  },
+  "tpl-save": (el) => {
+    const v = $("#tpl-url").value.trim(), c = custOf(S, el.dataset.id);
+    if (v && !IP.parseSheetUrl(v)) return toast("Link Google Sheet không hợp lệ (dạng https://docs.google.com/spreadsheets/d/…).", "bad");
+    c.sheet = v; c.sheetTab = $("#tpl-tab").value.trim() || "DON"; save(); closeDialog(); render();
+    toast(v ? `Đã lưu link Google Sheet cho ${c.code} — bấm “Đồng bộ Google Sheet” để lấy đơn.` : `Đã gỡ link Google Sheet của ${c.code}.`);
+  },
   "imp-sample": () => { ui.impRows = null; ui.impLabel = "Dữ liệu mẫu (tab DON)"; $("#imp-text").value = ORDER_SAMPLE; $("#imp-cust").value = "SKL116"; },
   "imp-check": () => {
     const a = analyzeImport();
@@ -1573,6 +1620,7 @@ document.addEventListener("change", (e) => {
   else if (c === "dr-sel") { const id = Number(el.value); el.checked ? ui.drafts.sel.add(id) : ui.drafts.sel.delete(id); render(); }
   else if (c === "dr-all") { $$('[data-c="dr-sel"]').forEach((x) => (el.checked ? ui.drafts.sel.add(Number(x.value)) : ui.drafts.sel.delete(Number(x.value)))); render(); }
   else if (c === "imp-file") readImportFile(el.files[0]);
+  else if (c === "tpl-cust") templateDialog(el.value);
   else if (c === "pi-file") readPriceFile(el.files[0]);
   else if (c === "ver-kind") { ui.verKind = el.value; render(); }
   else if (c === "stn-cust") { ui.stNew = { ...ui.stNew, cust: el.value, sel: new Set() }; render(); }
