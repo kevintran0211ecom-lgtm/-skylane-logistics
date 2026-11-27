@@ -1,7 +1,7 @@
 import "server-only";
 import { and, asc, desc, eq, gte, ilike, inArray, lt, lte, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { customers, orderPackages, orders, routes } from "@/drizzle/schema";
+import { customers, orderPackages, orders, pricingVersions, routes } from "@/drizzle/schema";
 import { searchMode } from "@/lib/search";
 import { dayRangeIso, type OrderListFilter, type OrderSortKey } from "./filters";
 import type { OrderStatus } from "./schemas";
@@ -151,9 +151,16 @@ export async function listOrderCodes(f: Omit<OrderFilter, "page" | "pageSize">, 
 /** Chi tiết 1 đơn cho cửa sổ xem/sửa (kèm kiện) */
 export async function getOrderDetail(id: number) {
   const [row] = await db
-    .select({ o: orders, customerName: customers.name, saleUserId: customers.saleUserId, currency: customers.currency })
+    .select({
+      o: orders,
+      customerName: customers.name,
+      saleUserId: customers.saleUserId,
+      currency: customers.currency,
+      sellScope: sql<"CUSTOMER" | "GROUP" | "DEFAULT" | null>`case when ${pricingVersions.id} is null then null when ${pricingVersions.customerCode} is not null then 'CUSTOMER' when ${pricingVersions.priceGroupCode} is not null then 'GROUP' else 'DEFAULT' end`,
+    })
     .from(orders)
     .innerJoin(customers, eq(customers.customerCode, orders.customerCode))
+    .leftJoin(pricingVersions, eq(pricingVersions.id, orders.sellVersionId))
     .where(eq(orders.id, id));
   if (!row) return null;
   const packages = await db
@@ -202,6 +209,7 @@ export async function getOrderDetail(id: number) {
     profit: o.profit,
     priceLocked: o.priceLocked,
     manualOverrides: o.manualOverrides,
+    sellScope: row.sellScope,
     packages,
   };
 }

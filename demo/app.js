@@ -3,7 +3,7 @@
 // Module thật của dự án (biên dịch từ lib/*.ts)
 // =============================================================================
 const E = __M.engine, IX = __M.importExcel, V = __M.versioning, IP = __M.importParse, SF = __M.statementFmt, RF = __M.receiptFmt, P = __M.permissions;
-const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate;
+const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -165,6 +165,31 @@ function newOrder(S, d) {
     rAddress: d.rAddress || "", rCity: d.rCity || "", rState: d.rState || "", rPostal: d.rPostal || "", rPhone: d.rPhone || "", rEmail: d.rEmail || "",
     hs: d.hs || "", goodsVi: d.goodsVi || "", goodsEn: d.goodsEn || "", declared: d.declared || "", rowVersion: 1,
   };
+}
+
+/** Tính lại giá các đơn thỏa điều kiện → báo cáo (tổng giá bán trước/sau, nguồn giá, đơn khóa) — dùng chung thông báo với web thật */
+function repriceWhere(S, pred) {
+  const r = RS.emptyReport(), cat = catalogOf(S);
+  for (const o of S.orders.filter(pred)) {
+    if (o.locked) { r.locked++; continue; }
+    const before = o.sell;
+    if (reprice(S, o, cat)) {
+      if (o.warn) r.failed.push({ billCode: o.bill, message: o.warn });
+      else { r.repriced++; RS.addRepriced(r, before, o.sell, o.overrides.includes("sell_amount") ? null : o.sellScope || null); }
+    }
+  }
+  return r;
+}
+const scopeOfVersion = (v) => (v.customerCode ? "CUSTOMER" : v.priceGroupCode ? "GROUP" : "DEFAULT");
+/** Thêm phiên bản bảng giá (chốt ngày kết thúc phiên bản cũ CÙNG tuyến + loại + phạm vi) — dùng cho import & bảng riêng của nhóm */
+function addPriceVersion(S, { routeCode, kind, scope, from, mode, currency, zones, name, note }) {
+  const same = (v) => v.routeCode === routeCode && v.kind === kind && (v.status || "ACTIVE") === "ACTIVE" && (v.customerCode || null) === (scope.type === "CUSTOMER" ? scope.code : null) && (v.priceGroupCode || null) === (scope.type === "GROUP" ? scope.code : null);
+  const plan = V.planNewVersion(S.versions.filter(same).map((v) => ({ id: v.id, effectiveFrom: v.effectiveFrom, effectiveTo: v.effectiveTo })), from);
+  if (!plan.ok) throw new Error(`${routeCode}: ${plan.error}`);
+  plan.close.forEach((c) => (S.versions.find((v) => v.id === c.id).effectiveTo = c.newEffectiveTo));
+  const v = { id: Math.max(0, ...S.versions.map((x) => x.id)) + 1, routeCode, kind, customerCode: scope.type === "CUSTOMER" ? scope.code : null, priceGroupCode: scope.type === "GROUP" ? scope.code : null, mode, effectiveFrom: from, effectiveTo: plan.newEffectiveTo, status: "ACTIVE", currency, name, note, zones };
+  S.versions.push(v);
+  return { v, closed: plan.close.length };
 }
 
 /** Tự động tính lại giá: đơn chưa khóa → engine tính lại cân, giá bán, giá gốc */
@@ -350,6 +375,7 @@ const VIEWS = {
   "don-hang": { label: "Vận đơn", perm: "orders.view", group: "Vận hành" },
   "bao-gia": { label: "Tra cứu giá gốc", perm: "quote.view", group: "Vận hành" },
   "bang-ke": { label: "Bảng kê", perm: "statements.view", group: "Tài chính" },
+  "tao-bang-ke": { label: "Tạo bảng kê", perm: "statements.manage", group: "Tài chính" },
   "doi-soat": { label: "Đối soát thu tiền", perm: "receipts.view", group: "Tài chính" },
   "khach-hang": { label: "Khách hàng", perm: "catalog.view", group: "Danh mục" },
   "nhom-gia": { label: "Nhóm giá", perm: "catalog.view", group: "Danh mục" },
@@ -357,9 +383,12 @@ const VIEWS = {
   "bang-gia": { label: "Kho bảng giá", perm: "pricing.view", group: "Danh mục" },
 };
 const home = () => P.homeFor(me().role).slice(1);
+const TAB_KEY = "skylane-tabs";
 const ui = {
+  tabs: (() => { try { const t = JSON.parse(localStorage.getItem(TAB_KEY) || "[]"); return Array.isArray(t) ? t.filter((k) => VIEWS[k]) : []; } catch { return []; } })(),
+  scroll: {}, lastView: null,
   dash: { from: "2026-11-01", to: today() < "2026-11-01" ? "2026-11-30" : today(), cust: "", sale: "", table: false },
-  orders: { q: "", status: "", page: 1, sel: new Set(), df: "sent", from: "", to: "", sort: "", dir: "asc" },
+  orders: { q: "", status: "", cust: "", asg: "", iso2: "", page: 1, sel: new Set(), df: "sent", from: "", to: "", sort: "", dir: "asc" },
   drafts: { status: "CHO_XAC_NHAN", q: "", cust: "", sel: new Set() },
   quote: { to: "US", kg: "1,5", vol: "DIM", l: "30", w: "20", h: "15", cbm: "", date: today(), ran: true },
   ver: null, verKind: "", verRoute: "", st: null, stNew: null, rc: null, stq: { q: "", sort: "", dir: "asc" },
@@ -402,8 +431,29 @@ function shell(content) {
       <span><b>Bản chạy thử</b> — logic thật của dự án (engine giá, import, phiên bản, bảng kê, đối soát, phân quyền) trên dữ liệu mẫu, chỉ lưu trong trình duyệt của bạn.</span>
       <span class="flex items-center gap-2"><span class="md:hidden">${roleSel}</span><select class="inp md:hidden" style="width:auto" data-c="nav">${Object.entries(VIEWS).filter(([, v]) => can(v.perm)).map(([k, v]) => `<option value="${k}" ${k === view ? "selected" : ""}>${v.label}</option>`).join("")}</select><button class="btn o sm" data-a="reset">Đặt lại dữ liệu mẫu</button></span>
     </div>
+    ${tabBar(view)}
     <div class="fade">${content}</div>
   </main></div>`;
+}
+const MAX_TABS = 10;
+const saveTabs = () => { try { localStorage.setItem(TAB_KEY, JSON.stringify(ui.tabs)); } catch {} };
+function syncTabs(view) {
+  ui.tabs = ui.tabs.filter((k) => VIEWS[k] && can(VIEWS[k].perm));
+  if (!ui.tabs.includes(view)) ui.tabs.push(view);
+  while (ui.tabs.length > MAX_TABS) ui.tabs.splice(ui.tabs.findIndex((k) => k !== view), 1);
+  saveTabs();
+}
+function tabBar(view) {
+  const many = ui.tabs.length > 1;
+  return `<div class="tabs" role="tablist" aria-label="Các mục đang mở">${ui.tabs.map((k) => `<div class="tab ${k === view ? "on" : ""}" role="tab" aria-selected="${k === view}" data-tab="${k}"><a href="#${k}" title="${esc(VIEWS[k].label)}">${esc(VIEWS[k].label)}</a>${many ? `<button class="x" data-a="tab-close" data-id="${k}" title="Đóng tab" aria-label="Đóng tab ${esc(VIEWS[k].label)}">×</button>` : '<span style="width:10px"></span>'}</div>`).join("")}
+  ${many ? `<button class="btn g sm ml-auto shrink-0 text-xs muted" data-a="tab-others" title="Chỉ giữ tab đang xem">Đóng tab khác</button>` : ""}</div>`;
+}
+function closeTab(k) {
+  const view = current(), i = ui.tabs.indexOf(k);
+  if (i < 0 || ui.tabs.length < 2) return;
+  ui.tabs.splice(i, 1); delete ui.scroll[k]; saveTabs();
+  if (k === view) location.hash = ui.tabs[Math.min(i, ui.tabs.length - 1)];
+  else render();
 }
 const roleHint = (r) =>
   ({ ADMIN: "Toàn quyền, gồm mở khóa & sửa đơn đã khóa giá.", KE_TOAN: "Bảng kê, đối soát, công nợ; sửa/mở khóa đơn khóa giá.", KHO: "Sửa kích thước, cân, trạng thái, tuyến chỉ định. Không thấy giá.", SALE: "Chỉ xem đơn, báo giá, công nợ khách mình phụ trách." })[r];
@@ -418,10 +468,13 @@ function current() {
 let chartRO = null;
 function render() {
   const v = current();
+  syncTabs(v);
   if (chartRO) { chartRO.disconnect(); chartRO = null; }
-  const fn = { dashboard: vDashboard, "don-du-bao": vDrafts, "nhom-gia": vGroups, "don-hang": vOrders, "bao-gia": vQuote, "bang-ke": vStatements, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
+  const fn = { dashboard: vDashboard, "don-du-bao": vDrafts, "nhom-gia": vGroups, "don-hang": vOrders, "bao-gia": vQuote, "bang-ke": vStatements, "tao-bang-ke": vStatementNew, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
   $("#app").innerHTML = shell(fn());
   if (v === "dashboard") drawChart();
+  if (ui.lastView !== v) { window.scrollTo(0, ui.scroll[v] || 0); ui.lastView = v; }
+  $(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 // =============================================================================
@@ -543,6 +596,7 @@ function visibleOrders() {
   const dateOf = (o) => (f.df === "exported" ? dayVi(o.exportedAt) : f.df === "created" ? dayVi(o.createdAt) : pd(o));
   const list = S.orders
     .filter((o) => inScope(o.customer))
+    .filter((o) => (!f.cust || o.customer === f.cust) && (!f.asg || (o.assigned || o.route) === f.asg) && (!f.iso2 || o.iso2 === f.iso2))
     .filter((o) => (codes ? codes.has(o.bill) || codes.has(String(o.tracking || "").toUpperCase()) : !term || [o.bill, o.tracking, o.customer, cust(o.customer)?.name].some((x) => String(x || "").toLowerCase().includes(term))))
     .filter((o) => { if (!f.from && !f.to) return true; const d = dateOf(o); return !!d && (!f.from || d >= f.from) && (!f.to || d <= f.to); });
   const key = O_SORT[f.sort];
@@ -569,10 +623,18 @@ function vOrders() {
   const m = SL.searchMode(f.q);
   const missing = m.kind === "codes" ? SL.missingCodes(m.codes, S.orders.filter((o) => inScope(o.customer)).flatMap((o) => [o.bill, o.tracking])) : [];
   const picked = S.orders.filter((o) => f.sel.has(o.id));
-  const filtered = !!(f.q || f.from || f.to || f.status);
+  const filtered = !!(f.q || f.from || f.to || f.status || f.cust || f.asg || f.iso2);
+  const scoped = S.orders.filter((o) => inScope(o.customer));
+  const qsel = (k, label, opts, w) => `<label class="f"><span>${label}</span><select class="inp" data-c="o-quick" data-k="${k}" style="width:${w}px;${f[k] ? "border-color:var(--accent);background:var(--soft)" : ""}"><option value="">Tất cả</option>${opts.map(([v, t]) => `<option value="${esc(v)}" ${f[k] === v ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>`;
+  const custOpts = S.customers.filter((c) => inScope(c.code)).map((c) => [c.code, `${c.code} — ${c.name}`]);
+  const asgOpts = [...new Set([...S.routes.map((r) => r.code), ...scoped.map((o) => o.assigned || o.route)])].sort().map((r) => [r, r]);
+  const isoOpts = [...new Set(scoped.map((o) => o.iso2).filter(Boolean))].sort().map((c) => [c, c]);
   return head("Quản lý vận đơn", "Bấm vào mã vận đơn để xem & sửa đầy đủ. Đơn chưa khóa giá tự tính lại giá gốc, giá bán, lợi nhuận khi đổi kích thước, cân hoặc tuyến.",
     `<button class="btn o" data-a="copy-menu">Sao chép ▾</button>${bulk ? `<button class="btn o" data-a="bulk-open" ${f.sel.size ? "" : "disabled"}>Sửa đổi hàng loạt${f.sel.size ? ` (${f.sel.size})` : ""}</button>` : ""}${can("drafts.view") ? `<a class="btn o" href="#don-du-bao">Nhận đơn mới${pendingDrafts() ? ` <span class="b b-info">${pendingDrafts()}</span>` : ""}</a>` : ""}`) + `
   <div class="mb-3 flex flex-wrap border-b line">${tabs}</div>
+  <div class="mb-2 flex flex-wrap items-end gap-2" id="o-quick"><span class="pb-2 text-xs font-medium muted">Lọc nhanh:</span>
+    ${qsel("cust", "Mã KH — Tên khách hàng", custOpts, 230)}${qsel("asg", "Tuyến chỉ định", asgOpts, 180)}${qsel("iso2", "Điểm đến", isoOpts, 110)}${qsel("status", "Trạng thái", STATUSES.map((x) => [x, x]), 160)}
+  </div>
   <div class="mb-3 flex flex-wrap items-end gap-2" id="o-filter">
     <label class="f"><span>Mã vận đơn / tracking / khách hàng — dán nhiều mã, mỗi dòng 1 mã</span><textarea class="inp" id="o-q" rows="${Math.min(6, Math.max(1, f.q.split("\n").length))}" style="width:320px;min-height:36px;font-family:ui-monospace,monospace;font-size:12px;resize:vertical" placeholder="#AP3004&#10;#AP3003&#10;MN2637">${esc(f.q)}</textarea></label>
     <label class="f"><span>Tra cứu thời gian</span><span class="flex items-center gap-1"><select class="inp" id="o-df" style="width:170px">${Object.entries(DATE_FIELDS).map(([k, v]) => `<option value="${k}" ${f.df === k ? "selected" : ""}>${v}</option>`).join("")}</select><input class="inp" type="date" id="o-from" value="${f.from}" style="width:150px" aria-label="Từ ngày"><span class="muted">–</span><input class="inp" type="date" id="o-to" value="${f.to}" style="width:150px" aria-label="Đến ngày"></span></label>
@@ -673,7 +735,7 @@ function odDialog(o) {
     <fieldset class="grid gap-2"><legend class="mb-2 text-sm font-semibold">Kiện hàng — kích thước & cân</legend>${pkHead}<div id="pks" class="grid gap-2">${(o.packages.length ? o.packages : [{}]).map(pkRow).join("")}</div>
       <div class="flex flex-wrap items-center justify-between gap-2 text-sm">${ok("packages") ? `<button type="button" class="btn o sm" data-a="pk-add">+ Thêm kiện</button>` : "<span></span>"}<span class="muted">Cân thực <b style="color:var(--ink)">${kg(o.actual)}</b> · Quy đổi <b style="color:var(--ink)">${kg(o.vol)}</b> · Tính phí <b style="color:var(--ink)">${kg(o.billed)}</b> · Xuất hàng <b style="color:var(--ink)">${kg(o.shipped)}</b> kg</span></div></fieldset>
     ${can("orders.viewMoney") ? sec("Giá (VND) — để trống = tự tính theo bảng giá",
-      `<label class="f"><span>${L.sellAmount}</span><input class="inp num" ${nm("sellAmount")} data-c="od-sell" inputmode="numeric" value="${sellOv ? fmtK(o.sell) : ""}" placeholder="${money(o.sell)}"><span class="text-xs" style="color:${sellOv ? "#b45309" : "var(--muted)"}">${sellOv ? "Ghi đè thủ công" : `Tự tính: ${money(o.sell)}`}</span></label>
+      `<label class="f"><span>${L.sellAmount}</span><input class="inp num" ${nm("sellAmount")} data-c="od-sell" inputmode="numeric" value="${sellOv ? fmtK(o.sell) : ""}" placeholder="${money(o.sell)}"><span class="text-xs" style="color:${sellOv ? "#b45309" : "var(--muted)"}">${sellOv ? "Ghi đè thủ công" : `Tự tính: ${money(o.sell)}${o.sellScope ? ` · ${RS.SCOPE_LABEL[o.sellScope]}` : ""}`}</span></label>
        <label class="f"><span>Đơn giá bán (VND/kg)</span><input class="inp num" data-c="od-unit" inputmode="numeric" ${ok("sellAmount") && Number(o.billed) > 0 ? "" : "disabled"} value="${sellOv && unitAuto ? fmtK(unitAuto) : ""}" placeholder="${unitAuto ? money(unitAuto) : "—"}"><span class="text-xs muted">= giá bán ÷ ${kg(o.billed)} kg tính phí</span></label>
        <label class="f"><span>${L.costAmount}</span><input class="inp num" ${nm("costAmount")} data-c="fmt" inputmode="numeric" value="${costOv ? fmtK(o.cost) : ""}" placeholder="${money(o.cost)}"><span class="text-xs" style="color:${costOv ? "#b45309" : "var(--muted)"}">${costOv ? "Ghi đè thủ công" : `Tự tính: ${money(o.cost)}`}</span></label>
        <div class="f"><span class="text-xs font-medium muted">Lợi nhuận</span><div class="inp num flex items-center justify-end font-semibold" style="color:${o.sell - o.cost < 0 ? "#dc2626" : "#047857"}">${money(o.sell - o.cost)}</div>${(sellOv || costOv) && ok("sellAmount") ? `<button type="button" class="text-left text-xs" style="color:var(--accent)" data-a="od-auto">↺ Bỏ ghi đè, tự tính lại</button>` : ""}</div>`, 4) : ""}
@@ -1032,16 +1094,28 @@ function priceSample() {
   ];
   return rows.map((r) => r.join("\t")).join("\n");
 }
-function priceImportDialog() {
+const scopeOptions = (type, sel) => (type === "CUSTOMER" ? S.customers.map((c) => [c.code, `${c.code} — ${c.name}`]) : S.groups.map((g) => [g.code, `${g.code} — ${g.name} (${GT.pctLabel(g.adjust)})`]))
+  .map(([v, l]) => `<option value="${esc(v)}" ${v === sel ? "selected" : ""}>${esc(l)}</option>`).join("");
+const piScope = () => {
+  const kind = $("#pi-kind").value, type = kind === "SELL" ? $("#pi-scope").value : "DEFAULT";
+  return type === "DEFAULT" ? { type } : { type, code: $("#pi-scode").value };
+};
+const scopeText = (sc) => (sc.type === "GROUP" ? `Nhóm ${sc.code}` : sc.type === "CUSTOMER" ? `Khách ${sc.code}` : "Chung");
+function priceImportDialog(preset) {
   ui.piSheets = null;
   openDialog("Import bảng giá từ file Excel", `<div class="grid gap-3">
     <div class="card grid gap-2 p-3 text-sm" style="background:var(--soft)"><b>Định dạng file (ma trận ngang)</b>
       <span>• Dòng 1: tên tuyến, gộp ô theo cụm cột của tuyến (trùng mã tuyến trong Danh mục). • Dòng 2: “Khối lượng (KG)” rồi các cột nước, mã ISO2 đứng đầu: “US – Mỹ (VND)”.</span>
       <span>• Mốc số (0,1 … 20) = giá trọn mốc (Ma trận). Nhãn 21-44, 45-99, 100+, 300+ = đơn giá/kg (Theo kg). Ô trống hoặc “-” = không phục vụ.</span>
       <span><button class="btn o sm" data-a="pimp-template">⬇ Tải file Excel mẫu (2 tuyến ví dụ + hướng dẫn)</button></span></div>
-    <div class="grid gap-3 sm:grid-cols-3"><label class="f"><span>Loại bảng giá</span><select class="inp" id="pi-kind"><option value="COST">Giá gốc (NCC)</option><option value="SELL">Giá bán chung</option></select></label>
+    <div class="grid gap-3 sm:grid-cols-3"><label class="f"><span>Loại bảng giá</span><select class="inp" id="pi-kind" data-c="pi-kind"><option value="COST" ${preset ? "" : "selected"}>Giá gốc (nhà cung cấp)</option><option value="SELL" ${preset ? "selected" : ""}>Giá bán (khách hàng)</option></select></label>
     <label class="f"><span>Ngày hiệu lực *</span><input class="inp" type="date" id="pi-date" value="${today() > "2026-12-01" ? today() : "2026-12-01"}"></label>
     <label class="f"><span>File Excel (.xlsx) *</span><input class="inp" type="file" accept=".xlsx,.xls,.csv" data-c="pi-file" style="padding-top:6px"></label></div>
+    <div id="pi-scope-box" class="card grid gap-3 p-3 sm:grid-cols-2" style="${preset ? "" : "display:none"}">
+      <label class="f"><span>Phạm vi áp dụng</span><select class="inp" id="pi-scope" data-c="pi-scope"><option value="DEFAULT">Bảng giá chung</option><option value="GROUP" ${preset?.type === "GROUP" ? "selected" : ""}>Theo nhóm giá</option><option value="CUSTOMER" ${preset?.type === "CUSTOMER" ? "selected" : ""}>Riêng một khách hàng</option></select></label>
+      <label class="f" id="pi-scode-box" style="${preset ? "" : "display:none"}"><span id="pi-scode-label">${preset?.type === "CUSTOMER" ? "Khách hàng *" : "Nhóm giá *"}</span><select class="inp" id="pi-scode">${scopeOptions(preset?.type || "GROUP", preset?.code)}</select></label>
+      <p class="text-xs muted sm:col-span-2">Giá bán theo nhóm: thay giá chung × % cho các tuyến có trong file (nhóm không cộng % trên bảng riêng). Riêng khách: ưu tiên cao nhất, không áp % nào.</p>
+    </div>
     <details class="text-sm"><summary class="cursor-pointer muted">Hoặc dán dữ liệu copy từ Excel</summary><div class="mt-2 grid gap-2"><div><button class="btn o sm" data-a="pimp-sample">Dán bảng giá mẫu (+5%)</button></div><textarea class="inp" id="pi-text" rows="7" style="font-family:ui-monospace,monospace;font-size:12px" placeholder="Dán bảng giá ở đây…"></textarea></div></details>
     <p class="text-xs muted" id="pi-src"></p>
     <div class="flex gap-2"><button class="btn o" data-a="pimp-check">Xem trước</button><button class="btn" id="pi-commit" data-a="pimp-commit" disabled>Xác nhận nhập</button></div><div id="pi-out"></div></div>`, true);
@@ -1069,15 +1143,16 @@ async function downloadPriceTemplate() {
   if (await saveBlob(new Blob([await wb.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), PT.PRICE_TEMPLATE_FILENAME)) toast(`Đã tải ${PT.PRICE_TEMPLATE_FILENAME} — điền giá rồi bấm Import bảng giá.`);
 }
 function analyzePrice() {
-  const kind = $("#pi-kind").value, from = $("#pi-date").value;
+  const kind = $("#pi-kind").value, from = $("#pi-date").value, scope = piScope();
   const parsed = IX.parsePriceWorkbook(ui.piSheets || [{ name: "Dữ liệu dán", rows: parseTsv($("#pi-text").value) }]);
   const blocks = parsed.blocks.map((b) => {
     const exists = S.routes.some((r) => r.code === b.routeCode);
-    const active = S.versions.filter((v) => v.routeCode === b.routeCode && v.kind === kind && (v.status || "ACTIVE") === "ACTIVE" && !v.customerCode && !v.priceGroupCode);
+    const active = S.versions.filter((v) => v.routeCode === b.routeCode && v.kind === kind && (v.status || "ACTIVE") === "ACTIVE" && (v.customerCode || null) === (scope.type === "CUSTOMER" ? scope.code : null) && (v.priceGroupCode || null) === (scope.type === "GROUP" ? scope.code : null));
     return { b, exists, plan: exists ? V.planNewVersion(active.map((v) => ({ id: v.id, effectiveFrom: v.effectiveFrom, effectiveTo: v.effectiveTo })), from) : null };
   });
   const errors = [...parsed.errors, ...blocks.filter((x) => !x.exists).map((x) => `Tuyến ${x.b.routeCode} chưa có trong Danh mục.`), ...blocks.filter((x) => x.plan && !x.plan.ok).map((x) => `${x.b.routeCode}: ${x.plan.error}`)];
-  return { kind, from, blocks, errors };
+  if (scope.type !== "DEFAULT" && !scope.code) errors.push("Chọn nhóm giá / khách hàng cho phạm vi áp dụng.");
+  return { kind, from, scope, blocks, errors };
 }
 
 // =============================================================================
@@ -1085,7 +1160,6 @@ function analyzePrice() {
 // =============================================================================
 const ST_SORT = { no: (s) => s.no, name: (s) => s.name, customer: (s) => s.customer, issued: (s) => s.issuedAt, n: (s) => s.items.length, total: (s) => s.total, paid: (s) => s.paid, bal: (s) => s.total - s.paid, debt: (s) => s.debt, status: (s) => s.status };
 function vStatements() {
-  if (ui.stNew) return vStatementNew();
   if (ui.st) return vStatement(S.statements.find((s) => s.id === ui.st));
   const f = ui.stq, m = SL.searchMode(f.q);
   const codes = m.kind === "codes" ? new Set(m.codes) : null, term = m.kind === "like" ? m.term.toLowerCase() : "";
@@ -1095,7 +1169,7 @@ function vStatements() {
   list = key ? list.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * (f.dir === "asc" ? 1 : -1); }) : list.sort((a, b) => (a.issuedAt < b.issuedAt ? 1 : -1));
   const missing = codes ? SL.missingCodes(m.codes, S.statements.filter((s) => inScope(s.customer)).flatMap((s) => [s.no, ...s.items.map((i) => i.bill)])) : [];
   const th = (label, k, num) => `<th class="${num ? "num" : ""}"><button class="inline-flex items-center gap-1" data-a="st-sort" data-k="${k}" title="Bấm để sắp xếp A→Z / Z→A" style="${f.sort === k ? "color:var(--ink)" : ""}">${label}<span style="opacity:${f.sort === k ? 1 : 0.35}">${f.sort === k ? (f.dir === "asc" ? "↑" : "↓") : "↕"}</span></button></th>`;
-  return head("Bảng kê thanh toán", "Tạo từ đơn chưa lên bảng kê; đơn được khóa cứng giá. Mã SKLddMMyyXXXX. Tải Excel (.xlsx) đúng mẫu SkyLane.", can("statements.manage") ? `<button class="btn" data-a="st-new">+ Tạo bảng kê</button>` : "") + `
+  return head("Bảng kê thanh toán", "Tạo từ đơn chưa lên bảng kê; đơn được khóa cứng giá. Mã SKLddMMyyXXXX. Tải Excel (.xlsx) đúng mẫu SkyLane.", can("statements.manage") ? `<a class="btn" href="#tao-bang-ke">+ Tạo bảng kê</a>` : "") + `
   <div class="mb-3 flex flex-wrap items-end gap-2"><label class="f"><span>Mã bảng kê / mã vận đơn — dán nhiều mã, mỗi dòng 1 mã</span><textarea class="inp" id="st-q" rows="${Math.min(6, Math.max(1, f.q.split("\n").length))}" style="width:320px;min-height:36px;font-family:ui-monospace,monospace;font-size:12px;resize:vertical" placeholder="SKL2611120001&#10;#AP1376">${esc(f.q)}</textarea></label><button class="btn o" data-a="st-search">🔍 Tìm</button>${f.q ? `<button class="btn g" data-a="st-qclear">✕ Xóa lọc</button>` : ""}</div>
   ${missing.length ? `<div class="card mb-3 p-3 text-sm" style="border-color:#d97706;color:#b45309">Không tìm thấy ${missing.length} mã: <span style="font-family:ui-monospace,monospace">${esc(missing.join(", "))}</span></div>` : ""}
   <div class="card scroll"><table class="t"><thead><tr>${th("Mã bảng kê", "no")}${th("Tên bảng kê", "name")}${th("Khách hàng", "customer")}${th("Ngày tạo", "issued")}${th("Số đơn", "n", 1)}${th("Tổng tiền", "total", 1)}${th("Đã thu", "paid", 1)}${th("Còn nợ", "bal", 1)}${th("Công nợ", "debt")}${th("Trạng thái", "status")}<th>Excel</th></tr></thead><tbody>
@@ -1131,17 +1205,47 @@ async function downloadStatementXlsx(s) {
   const buf = await wb.xlsx.writeBuffer();
   if (await saveBlob(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${s.name}.xlsx`)) toast(`Đã tải ${s.name}.xlsx`);
 }
+const stnBase = (o, n) => o.customer === n.cust && o.debt === "Chưa thanh toán";
+/** Tra cứu nhiều mã cho Tạo bảng kê: phân loại từng mã */
+function stnLookup(n) {
+  const m = SL.searchMode(n.q || "");
+  if (m.kind === "none") return null;
+  const codes = m.kind === "codes" ? m.codes : [m.term.toUpperCase()];
+  const pool = S.orders.filter((o) => inScope(o.customer));
+  const res = { ok: [], other: [], billed: [], missing: [] };
+  for (const c of codes) {
+    const o = pool.find((x) => x.bill === c || String(x.tracking || "").toUpperCase() === c);
+    if (!o) { res.missing.push(c); continue; }
+    if (o.debt !== "Chưa thanh toán") { const st = S.statements.find((x) => x.status === "ACTIVE" && x.items.some((i) => i.orderId === o.id)); res.billed.push({ c, o, st }); continue; }
+    if (o.customer !== n.cust) { res.other.push({ c, o }); continue; }
+    res.ok.push(o);
+  }
+  return res;
+}
 function vStatementNew() {
-  const n = ui.stNew;
-  const os = S.orders.filter((o) => o.customer === n.cust && o.debt === "Chưa thanh toán" && (!n.from || pd(o) >= n.from) && (!n.to || pd(o) <= n.to)).sort((a, b) => (pd(a) < pd(b) ? -1 : 1));
-  const picked = os.filter((o) => n.sel.has(o.id));
+  if (!ui.stNew || !inScope(ui.stNew.cust)) ui.stNew = { cust: scopedCustomers()[0]?.code, from: "", to: "", q: "", sel: new Set() };
+  const n = ui.stNew, lk = stnLookup(n);
+  const okIds = lk ? new Set(lk.ok.map((o) => o.id)) : null;
+  const os = S.orders.filter((o) => stnBase(o, n) && (okIds ? okIds.has(o.id) : (!n.from || pd(o) >= n.from) && (!n.to || pd(o) <= n.to))).sort((a, b) => (pd(a) < pd(b) ? -1 : 1));
+  const picked = S.orders.filter((o) => n.sel.has(o.id) && stnBase(o, n));
   const c = cust(n.cust);
-  return `<button class="btn g sm mb-2" data-a="st-back">‹ Bảng kê</button>` + head("Tạo bảng kê", "Lọc đơn chưa lên bảng kê theo khách hàng và Ngày gửi hàng, tick chọn rồi bấm Tạo.") + `
-  <div class="card mb-3 flex flex-wrap items-end gap-3 p-3"><label class="f"><span>Khách hàng</span><select class="inp" data-c="stn-cust">${S.customers.map((x) => `<option value="${x.code}" ${x.code === n.cust ? "selected" : ""}>${x.code} — ${esc(x.name)}</option>`).join("")}</select></label>
-  <label class="f"><span>Từ ngày gửi</span><input class="inp" type="date" data-c="stn-from" value="${n.from}"></label><label class="f"><span>Đến ngày gửi</span><input class="inp" type="date" data-c="stn-to" value="${n.to}"></label></div>
-  <div class="card mb-3 flex flex-wrap items-center justify-between gap-2 p-3" style="position:sticky;top:0;z-index:5"><span>Đã chọn <b>${picked.length}</b>/${os.length} đơn · Tổng <b style="color:var(--brand);font-size:16px">${money(picked.reduce((t, o) => t + Number(o.sell), 0))} VND</b> · Tên: <i>${esc(c.name)} - ${c.code} - SKLddMMyyXXXX</i></span><button class="btn" data-a="st-create" ${picked.length ? "" : "disabled"}>Tạo bảng kê (${picked.length})</button></div>
-  <div class="card scroll"><table class="t"><thead><tr><th><input type="checkbox" data-c="stn-all" ${os.length && picked.length === os.length ? "checked" : ""}></th><th>Ngày gửi</th><th>Mã vận đơn</th><th>Tracking</th><th>Đến</th><th>Người nhận</th><th class="num">Kiện</th><th class="num">Cân tính phí</th><th>Tuyến</th><th>Trạng thái</th><th class="num">Chi phí</th></tr></thead><tbody>
-  ${os.map((o) => `<tr><td><input type="checkbox" data-c="stn-sel" value="${o.id}" ${n.sel.has(o.id) ? "checked" : ""}></td><td class="num">${V.viDate(pd(o))}</td><td><b>${esc(o.bill)}</b> ${o.locked ? "🔒" : ""}</td><td class="muted">${esc(o.tracking)}</td><td>${o.iso2}</td><td>${esc(o.receiver)}</td><td class="num">${o.packages.length}</td><td class="num">${kg(o.billed)}</td><td>${esc(o.route)}</td><td>${badge(o.status, STATUS_TONE[o.status])}</td><td class="num ${Number(o.sell) ? "font-medium" : ""}" style="${Number(o.sell) ? "" : "color:#d97706"}">${Number(o.sell) ? money(o.sell) : "Chưa có giá"}</td></tr>`).join("") || `<tr><td colspan="11" class="py-6 text-center muted">Không có đơn chưa lên bảng kê.</td></tr>`}
+  const others = lk ? [...new Set(lk.other.map((x) => x.o.customer))] : [];
+  const mono = 'style="font-family:ui-monospace,monospace"';
+  const report = !lk ? "" : `<div class="card mb-3 grid gap-1 p-3 text-sm">
+    <div>Tra cứu <b>${lk.ok.length + lk.other.length + lk.billed.length + lk.missing.length}</b> mã: <b style="color:#047857">${lk.ok.length}</b> mã đủ điều kiện của ${esc(n.cust)} (đang hiện bên dưới, bỏ qua khoảng ngày gửi).</div>
+    ${lk.other.length ? `<div style="color:#b45309">${lk.other.length} mã thuộc khách khác: <span ${mono}>${esc(lk.other.map((x) => `${x.c} (${x.o.customer})`).join(", "))}</span>${others.length === 1 ? ` <button class="btn o sm" data-a="stn-switch" data-id="${esc(others[0])}">Chuyển sang ${esc(others[0])}</button>` : ""}</div>` : ""}
+    ${lk.billed.length ? `<div style="color:#b45309">${lk.billed.length} mã đã lên bảng kê: <span ${mono}>${esc(lk.billed.map((x) => `${x.c}${x.st ? ` → ${x.st.no}` : ` (${x.o.debt})`}`).join(", "))}</span></div>` : ""}
+    ${lk.missing.length ? `<div style="color:#dc2626">${lk.missing.length} mã không tìm thấy: <span ${mono}>${esc(lk.missing.join(", "))}</span></div>` : ""}
+  </div>`;
+  return head("Tạo bảng kê", "Chọn khách hàng, lọc theo Ngày gửi hàng hoặc dán danh sách mã vận đơn, tick chọn rồi bấm Tạo. Đơn lên bảng kê được khóa cứng giá.", `<a class="btn o" href="#bang-ke">Danh sách bảng kê</a>`) + `
+  <div class="card mb-3 flex flex-wrap items-end gap-3 p-3"><label class="f"><span>Khách hàng</span><select class="inp" data-c="stn-cust">${scopedCustomers().map((x) => `<option value="${x.code}" ${x.code === n.cust ? "selected" : ""}>${x.code} — ${esc(x.name)}</option>`).join("")}</select></label>
+  <label class="f"><span>Từ ngày gửi</span><input class="inp" type="date" data-c="stn-from" value="${n.from}" ${lk ? "disabled" : ""}></label><label class="f"><span>Đến ngày gửi</span><input class="inp" type="date" data-c="stn-to" value="${n.to}" ${lk ? "disabled" : ""}></label>
+  <label class="f"><span>Tra cứu nhiều mã vận đơn / tracking — mỗi dòng 1 mã</span><textarea class="inp" id="stn-q" rows="${Math.min(6, Math.max(2, (n.q || "").split("\n").length))}" style="width:300px;font-family:ui-monospace,monospace;font-size:12px;resize:vertical" placeholder="#AP3004&#10;#AP3003&#10;MN2637">${esc(n.q || "")}</textarea></label>
+  <span class="flex gap-2"><button class="btn o" data-a="stn-search" title="Ctrl+Enter">🔍 Tra cứu & chọn</button>${n.q ? `<button class="btn g" data-a="stn-qclear">✕ Bỏ tra cứu</button>` : ""}</span></div>
+  ${report}
+  <div class="card mb-3 flex flex-wrap items-center justify-between gap-2 p-3" style="position:sticky;top:44px;z-index:5"><span>Đã chọn <b>${picked.length}</b>/${os.length} đơn${picked.length > os.filter((o) => n.sel.has(o.id)).length ? ` <span class="muted">(gồm ${picked.length - os.filter((o) => n.sel.has(o.id)).length} đơn ngoài bộ lọc)</span>` : ""} · Tổng <b style="color:var(--brand);font-size:16px">${money(picked.reduce((t, o) => t + Number(o.sell), 0))} VND</b> · Tên: <i>${esc(c?.name || "")} - ${esc(n.cust || "")} - SKLddMMyyXXXX</i></span><span class="flex gap-2">${picked.length ? `<button class="btn g sm" data-a="stn-unsel">Bỏ chọn</button>` : ""}<button class="btn" data-a="st-create" ${picked.length ? "" : "disabled"}>Tạo bảng kê (${picked.length})</button></span></div>
+  <div class="card scroll"><table class="t"><thead><tr><th><input type="checkbox" data-c="stn-all" ${os.length && os.every((o) => n.sel.has(o.id)) ? "checked" : ""}></th><th>Ngày gửi</th><th>Mã vận đơn</th><th>Tracking</th><th>Đến</th><th>Người nhận</th><th class="num">Kiện</th><th class="num">Cân tính phí</th><th>Tuyến</th><th>Trạng thái</th><th class="num">Chi phí</th></tr></thead><tbody>
+  ${os.map((o) => `<tr><td><input type="checkbox" data-c="stn-sel" value="${o.id}" ${n.sel.has(o.id) ? "checked" : ""}></td><td class="num">${V.viDate(pd(o))}</td><td><b>${esc(o.bill)}</b> ${o.locked ? "🔒" : ""}</td><td class="muted">${esc(o.tracking)}</td><td>${o.iso2}</td><td>${esc(o.receiver)}</td><td class="num">${o.packages.length}</td><td class="num">${kg(o.billed)}</td><td>${esc(o.route)}</td><td>${badge(o.status, STATUS_TONE[o.status])}</td><td class="num ${Number(o.sell) ? "font-medium" : ""}" style="${Number(o.sell) ? "" : "color:#d97706"}">${Number(o.sell) ? money(o.sell) : "Chưa có giá"}</td></tr>`).join("") || `<tr><td colspan="11" class="py-6 text-center muted">${lk ? "Không có mã nào đủ điều kiện cho khách này." : "Không có đơn chưa lên bảng kê."}</td></tr>`}
   </tbody></table></div>`;
 }
 function vStatement(s) {
@@ -1285,9 +1389,55 @@ function vGroups() {
   ${S.groups.map((g) => { const n = Number(g.adjust); const r = own(g); return `<tr><td><b>${esc(g.code)}</b></td><td>${esc(g.name)}</td><td class="num font-semibold" style="color:${n < 0 ? "#047857" : n > 0 ? "#b45309" : "inherit"}">${n > 0 ? "+" : ""}${n.toLocaleString("vi-VN")}%</td><td>${r.length ? r.map((x) => badge(x, "info")).join(" ") : '<span class="muted">Không — dùng giá chung</span>'}</td><td class="num">${S.customers.filter((c) => c.group === g.code).length}</td><td>${g.active ? badge("Hoạt động", "ok") : badge("Ngừng")}</td>${m ? `<td><button class="btn g sm" data-a="gr-edit" data-id="${esc(g.code)}">Sửa</button></td>` : ""}</tr>`; }).join("") || `<tr><td colspan="7" class="py-6 text-center muted">Chưa có nhóm giá.</td></tr>`}</tbody></table></div>
   <p class="mt-2 text-xs muted">Thử: đổi % của nhóm CA_NHAN rồi xem giá bán các đơn của SKL126 trong Vận đơn thay đổi ngay (đơn chưa khóa giá). NHOM_BUSINESS có bảng giá riêng tuyến VNFZZXR & UPS HAN S5500 nên đơn các tuyến đó không bị cộng %.</p>`;
 }
+/** Cửa sổ nhóm giá: % so với giá chung, bảng giá bán theo tuyến (bảng riêng / giá chung × %), thêm tuyến bảng riêng, khách trong nhóm */
+function groupDialog(code) {
+  const g = code ? S.groups.find((x) => x.code === code) : null, m = can("catalog.manage"), pm = can("pricing.manage");
+  const t = today(), live = (v) => (v.status || "ACTIVE") === "ACTIVE" && (!v.effectiveTo || v.effectiveTo >= t);
+  const general = (rc) => S.versions.filter((v) => v.routeCode === rc && v.kind === "SELL" && !v.customerCode && !v.priceGroupCode && live(v) && v.effectiveFrom <= t).sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1))[0];
+  const own = (rc) => S.versions.filter((v) => v.routeCode === rc && v.kind === "SELL" && v.priceGroupCode === code && live(v)).sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? -1 : 1));
+  const rows = g ? S.routes.map((r) => ({ rc: r.code, gen: general(r.code), own: own(r.code) })).filter((x) => x.gen || x.own.length) : [];
+  const members = g ? S.customers.filter((c) => c.group === code) : [];
+  const others = g ? S.customers.filter((c) => c.group !== code) : [];
+  const pv = (id, label) => `<button class="btn g sm" data-a="gr-view" data-id="${id}" data-back="${esc(code)}">${label}</button>`;
+  openDialog(g ? `Sửa nhóm giá ${g.code}` : "Thêm nhóm giá", `<div class="grid gap-5" id="f-gr" data-id="${esc(g?.code || "")}">
+    <div class="grid gap-3 sm:grid-cols-2"><label class="f"><span>Mã nhóm *</span><input class="inp uppercase" name="code" value="${esc(g?.code || "")}" ${g ? "readonly" : ""} placeholder="VD: CA_NHAN"></label>
+    <label class="f"><span>Tên nhóm *</span><input class="inp" name="name" value="${esc(g?.name || "")}"></label>
+    <label class="f"><span>% so với giá chung</span><input class="inp" name="adjust" value="${esc(g?.adjust ?? "0")}"><span class="text-xs muted">10 = cao hơn giá chung 10%; -5 = thấp hơn 5%</span></label>
+    <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="active" ${g?.active ?? true ? "checked" : ""}> Đang hoạt động</label></div>
+    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Đóng</button>${m ? `<button class="btn" data-a="gr-save">${g ? "Lưu & tính lại giá" : "Thêm nhóm"}</button>` : ""}</div>
+    ${g ? `<section class="grid gap-2"><b class="text-sm">Bảng giá bán của nhóm theo tuyến</b>
+      <div class="card scroll"><table class="t"><thead><tr><th>Tuyến</th><th>Nhóm đang dùng</th><th>Xem bảng giá</th></tr></thead><tbody>
+      ${rows.map((x) => `<tr><td><b>${esc(x.rc)}</b></td><td>${x.own.length ? badge(`Bảng riêng từ ${V.viDate(x.own[0].effectiveFrom)}${x.own[0].effectiveTo ? ` đến ${V.viDate(x.own[0].effectiveTo)}` : ""}`, "info") : `Giá chung × (1 ${Number(g.adjust) < 0 ? "−" : "+"} ${Math.abs(Number(g.adjust))}%)`}</td><td>${x.own.length ? pv(x.own[0].id, "Bảng riêng") : x.gen ? pv(`${x.gen.id}:${code}`, `Giá nhóm (${GT.pctLabel(g.adjust)})`) : ""}</td></tr>`).join("") || `<tr><td colspan="3" class="py-4 text-center muted">Chưa có bảng giá bán.</td></tr>`}
+      </tbody></table></div>
+      <p class="text-xs muted">Tuyến dùng giá chung tự cập nhật theo % nhóm (bấm “Giá nhóm” để xem bảng đã nhân %). Tuyến có bảng riêng không cộng % nhóm.</p>
+      ${pm ? `<div class="card grid gap-2 p-3 sm:grid-cols-[1fr_170px_auto] sm:items-end">
+        <label class="f"><span>Thêm tuyến bảng giá riêng</span><select class="inp" id="gr-own-route"><option value="">— Chọn tuyến —</option>${rows.filter((x) => x.gen && !x.own.length).map((x) => `<option>${esc(x.rc)}</option>`).join("")}</select></label>
+        <label class="f"><span>Áp dụng từ ngày</span><input class="inp" type="date" id="gr-own-from" value="${t}"></label>
+        <button class="btn o" data-a="gr-own">+ Tạo bảng riêng</button>
+        <p class="text-xs muted sm:col-span-3">Sao chép bảng giá bán chung × (1 + % nhóm hiện tại) thành phiên bản riêng của nhóm. Đơn có ngày gửi trước ngày áp dụng vẫn dùng giá cũ — chọn ngày sớm hơn nếu muốn áp cho cả đơn đã có (đơn đã khóa giá không đổi). Có file giá riêng? <button class="text-left" style="color:var(--accent)" data-a="pimp-open-scope" data-t="GROUP" data-id="${esc(code)}">Import bảng giá riêng cho nhóm ${esc(code)}</button>.</p></div>` : ""}
+    </section>
+    <section class="grid gap-2"><b class="text-sm">Khách hàng trong nhóm (${members.length})</b>
+      <div class="flex flex-wrap gap-2">${members.map((c) => `<span class="card inline-flex items-center gap-2 px-2 py-1 text-sm"><b>${c.code}</b> ${esc(c.name)} <span class="text-xs muted">(${GT.pctLabel(c.adjust)} riêng)</span>${m ? `<button class="text-xs" style="color:#dc2626" data-a="gr-member" data-id="${c.code}" data-rm="1" title="Bỏ khỏi nhóm (dùng giá chung)">✕</button>` : ""}</span>`).join("") || '<span class="text-sm muted">Chưa có khách nào.</span>'}</div>
+      ${m ? `<div class="flex flex-wrap items-end gap-2"><label class="f"><span>Thêm khách vào nhóm</span><select class="inp" id="gr-add-member" style="width:300px"><option value="">— Chọn khách hàng —</option>${others.map((c) => `<option value="${c.code}">${c.code} — ${esc(c.name)}${c.group ? ` (đang ở ${c.group})` : ""}</option>`).join("")}</select></label><button class="btn o" data-a="gr-member">Thêm & tính lại giá</button></div>` : ""}
+    </section>` : ""}
+  </div>`, true);
+}
+/** Xem bảng giá: phiên bản (id) hoặc "id:NHÓM" = bảng chung đã nhân % nhóm */
+function priceVersionPreview(key, back) {
+  const [id, grp] = String(key).split(":"), v = S.versions.find((x) => x.id === Number(id)), g = grp ? S.groups.find((x) => x.code === grp) : null;
+  const zones = g ? GT.scaleZones(v.zones, g.adjust, v.currency || "VND") : v.zones;
+  const weights = [...new Set(zones.flatMap((z) => z.matrix.map((t) => Number(t.weightMax))))].sort((a, b) => a - b);
+  const kgTiers = [...new Set(zones.flatMap((z) => z.perKg.map((t) => `${t.weightMin}|${t.weightMax ?? ""}`)))];
+  openDialog(`${v.routeCode} — ${g ? `Giá bán nhóm ${g.code} = giá chung × (1 ${Number(g.adjust) < 0 ? "−" : "+"} ${Math.abs(Number(g.adjust))}%)` : v.name || "Bảng giá"}`, `<div class="grid gap-3">
+    <p class="text-sm muted">${g ? `Tính từ bảng giá bán chung hiệu lực từ ${V.viDate(v.effectiveFrom)}. Đổi % nhóm thì bảng này đổi theo.` : `Hiệu lực ${V.viDate(v.effectiveFrom)}${v.effectiveTo ? ` → ${V.viDate(v.effectiveTo)}` : " → không thời hạn"}. ${esc(v.note || "")}`}</p>
+    <div class="card scroll"><table class="t"><thead><tr><th>Khối lượng (kg)</th>${zones.map((z) => `<th class="num">${esc(z.zoneCode)}<div class="font-normal">${esc(z.countries.join(", "))}</div></th>`).join("")}</tr></thead><tbody>
+    ${weights.map((w) => `<tr><td class="num">≤ ${kg(w)}</td>${zones.map((z) => { const tr = z.matrix.find((t) => Number(t.weightMax) === w); return `<td class="num">${tr ? money(tr.price) : "–"}</td>`; }).join("")}</tr>`).join("")}
+    ${kgTiers.map((k) => { const [lo, hi] = k.split("|"); return `<tr><td class="num">${kg(lo)}–${hi ? kg(hi) : "∞"} /kg</td>${zones.map((z) => { const tr = z.perKg.find((t) => `${t.weightMin}|${t.weightMax ?? ""}` === k); return `<td class="num">${tr ? money(tr.unitPrice) : "–"}</td>`; }).join("")}</tr>`; }).join("")}
+    </tbody></table></div><div class="flex justify-end">${back ? `<button class="btn o" data-a="gr-edit" data-id="${esc(back)}">‹ Quay lại nhóm ${esc(back)}</button>` : `<button class="btn o" data-a="close">Đóng</button>`}</div></div>`, true);
+}
 function vRoutes() {
   const m = can("catalog.manage");
-  return head("Tuyến vận chuyển", "Loại hình dịch vụ quyết định làm tròn; cách tính cân & DIM quyết định cân quy đổi.") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã tuyến</th><th>NCC</th><th>Dịch vụ</th><th>Làm tròn</th><th>Cách tính cân</th><th class="num">DIM</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
+  return head("Tuyến vận chuyển", "Loại hình dịch vụ quyết định làm tròn; cách tính cân & DIM quyết định cân quy đổi.", m ? `<button class="btn" data-a="ro-edit" data-id="">+ Thêm tuyến vận chuyển</button>` : "") + `<div class="card scroll"><table class="t"><thead><tr><th>Mã tuyến</th><th>NCC</th><th>Dịch vụ</th><th>Làm tròn</th><th>Cách tính cân</th><th class="num">DIM</th>${m ? "<th></th>" : ""}</tr></thead><tbody>
   ${S.routes.map((r) => `<tr><td><b>${esc(r.code)}</b></td><td>${esc(r.supplier)}</td><td>${badge(r.service, "info")}</td><td class="text-xs muted">${SVC_ROUND[r.service]}</td><td>${r.mode === "ACTUAL_ONLY" ? badge("Chỉ cân thực", "warn") : badge("Max(thực, thể tích)")}</td><td class="num" style="${r.mode === "ACTUAL_ONLY" ? "text-decoration:line-through;color:var(--muted)" : ""}">${Number(r.dim).toLocaleString("vi-VN")}</td>${m ? `<td><button class="btn g sm" data-a="ro-edit" data-id="${esc(r.code)}">Sửa</button></td>` : ""}</tr>`).join("")}</tbody></table></div>
   <p class="mt-2 text-xs muted">Đổi DIM hoặc cách tính cân sẽ tính lại ngay các đơn chưa khóa giá dùng tuyến này (cả tuyến vận chuyển lẫn tuyến chỉ định).</p>`;
 }
@@ -1297,6 +1447,8 @@ function vRoutes() {
 // =============================================================================
 const A = {
   close: closeDialog,
+  "tab-close": (el, e) => { e?.preventDefault(); closeTab(el.dataset.id); },
+  "tab-others": () => { const v = current(); ui.tabs = [v]; ui.scroll = { [v]: ui.scroll[v] }; saveTabs(); render(); },
   reset: () => { freshData(); ui.orders.sel.clear(); ui.rc = null; ui.st = ui.stNew = ui.ver = null; save(); render(); toast("Đã đặt lại dữ liệu mẫu."); },
   "dash-table": () => { ui.dash.table = !ui.dash.table; render(); },
   "o-tab": (el) => { ui.orders.status = el.dataset.v; ui.orders.page = 1; render(); },
@@ -1305,7 +1457,7 @@ const A = {
     Object.assign(f, { q: $("#o-q").value.trim(), df: $("#o-df").value, from: from && to && from > to ? to : from, to: from && to && from > to ? from : to, page: 1 });
     render();
   },
-  "o-clear": () => { Object.assign(ui.orders, { q: "", from: "", to: "", df: "sent", status: "", page: 1 }); render(); },
+  "o-clear": () => { Object.assign(ui.orders, { q: "", from: "", to: "", df: "sent", status: "", cust: "", asg: "", iso2: "", page: 1 }); render(); },
   "o-sort": (el) => {
     const f = ui.orders, k = el.dataset.k;
     if (f.sort !== k) Object.assign(f, { sort: k, dir: "asc" }); else if (f.dir === "asc") f.dir = "desc"; else f.sort = "";
@@ -1436,7 +1588,8 @@ const A = {
     const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => (o.route === v.routeCode || o.assigned === v.routeCode) && reprice(S, o, cat) && n++);
     save(); render(); toast(`Đã ${v.status === "ACTIVE" ? "kích hoạt" : "lưu trữ"} phiên bản #${v.id}; tính lại ${n} đơn chưa khóa.`, v.status === "ACTIVE" ? "ok" : "warn");
   },
-  "pimp-open": priceImportDialog,
+  "pimp-open": () => priceImportDialog(),
+  "pimp-open-scope": (el) => priceImportDialog({ type: el.dataset.t, code: el.dataset.id }),
   "pimp-sample": () => { ui.piSheets = null; $("#pi-src").textContent = "Nguồn: dữ liệu dán."; $("#pi-text").value = priceSample(); },
   "pimp-template": () => downloadPriceTemplate().catch((err) => toast("Không tạo được file mẫu: " + err.message, "bad")),
   "pimp-check": () => {
@@ -1453,20 +1606,31 @@ const A = {
   "pimp-commit": () => {
     const a = analyzePrice();
     if (a.errors.length) return toast(a.errors[0], "bad");
-    let id = Math.max(...S.versions.map((v) => v.id)) + 1;
-    for (const { b, plan } of a.blocks) {
-      plan.close.forEach((c) => (S.versions.find((v) => v.id === c.id).effectiveTo = c.newEffectiveTo));
-      S.versions.push({ id: id++, routeCode: b.routeCode, kind: a.kind, customerCode: null, priceGroupCode: null, mode: b.mode, effectiveFrom: a.from, effectiveTo: plan.newEffectiveTo, status: "ACTIVE", currency: b.currency, name: `${b.routeCode} · ${a.kind === "COST" ? "Giá gốc" : "Giá bán"} · Chung`, note: `Import ${ui.piSheets ? "file Excel" : "dán từ Excel"} (${b.sheet} · ${b.cellRef})`, zones: b.zones.map((z) => ({ zoneCode: z.zoneCode, countries: z.countries, matrix: z.matrix, perKg: z.perKg })) });
-    }
-    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => reprice(S, o, cat) && n++);
-    save(); closeDialog(); render(); toast(`Đã tạo ${a.blocks.length} phiên bản hiệu lực từ ${V.viDate(a.from)}. Đơn có ngày gửi trước ngày này vẫn dùng giá cũ.`);
+    try {
+      for (const { b } of a.blocks)
+        addPriceVersion(S, { routeCode: b.routeCode, kind: a.kind, scope: a.scope, from: a.from, mode: b.mode, currency: b.currency, name: `${b.routeCode} · ${a.kind === "COST" ? "Giá gốc" : "Giá bán"} · ${scopeText(a.scope)}`, note: `Import ${ui.piSheets ? "file Excel" : "dán từ Excel"} (${b.sheet} · ${b.cellRef})`, zones: b.zones.map((z) => ({ zoneCode: z.zoneCode, countries: z.countries, matrix: z.matrix, perKg: z.perKg })) });
+    } catch (e) { return toast(e.message, "bad"); }
+    const rr = repriceWhere(S, () => true);
+    save(); closeDialog(); render(); toast(`Đã tạo ${a.blocks.length} phiên bản (${a.kind === "COST" ? "giá gốc" : "giá bán"} · ${scopeText(a.scope)}) hiệu lực từ ${V.viDate(a.from)}; ${RS.repriceMessage(rr) || "không có đơn chưa khóa bị ảnh hưởng"}. Đơn có ngày gửi trước ngày này vẫn dùng giá cũ.`);
   },
-  "st-new": () => { ui.stNew = { cust: scopedCustomers()[0].code, from: "", to: "", sel: new Set() }; render(); },
-  "st-back": () => { ui.st = ui.stNew = null; render(); },
+  "st-new": () => { location.hash = "tao-bang-ke"; },
+  "st-back": () => { ui.st = null; if (location.hash !== "#bang-ke") location.hash = "bang-ke"; else render(); },
+  "stn-search": () => {
+    const n = ui.stNew; n.q = $("#stn-q").value.trim();
+    let lk = stnLookup(n);
+    const others = lk ? [...new Set(lk.other.map((x) => x.o.customer))] : [];
+    if (lk && !lk.ok.length && others.length === 1) { n.cust = others[0]; n.sel = new Set(); lk = stnLookup(n); toast(`Các mã thuộc khách ${n.cust} — đã chuyển sang khách này.`, "warn"); }
+    if (lk) lk.ok.forEach((o) => n.sel.add(o.id));
+    render();
+  },
+  "stn-qclear": () => { ui.stNew.q = ""; render(); },
+  "stn-unsel": () => { ui.stNew.sel = new Set(); render(); },
+  "stn-switch": (el) => { const n = ui.stNew; n.cust = el.dataset.id; n.sel = new Set(); stnLookup(n)?.ok.forEach((o) => n.sel.add(o.id)); render(); },
   "st-open": (el) => { ui.st = Number(el.dataset.id); render(); },
   "st-create": () => {
     const n = ui.stNew;
-    try { const st = createStatement(S, n.cust, [...n.sel], n.from || null, n.to || null); save(); ui.stNew = null; ui.st = st.id; render(); toast(`Đã tạo ${st.name} (${st.items.length} đơn), chuyển “xuất bảng kê” và khóa giá các đơn.`); }
+    const ids = S.orders.filter((o) => n.sel.has(o.id) && stnBase(o, n)), ds = ids.map(pd).sort(), byCode = !!stnLookup(n);
+    try { const st = createStatement(S, n.cust, ids.map((o) => o.id), byCode ? ds[0] : n.from || null, byCode ? ds.at(-1) : n.to || null); save(); ui.stNew = { cust: n.cust, from: "", to: "", q: "", sel: new Set() }; ui.stOpen = st.id; location.hash = "bang-ke"; toast(`Đã tạo ${st.name} (${st.items.length} đơn), chuyển “xuất bảng kê” và khóa giá các đơn.`); }
     catch (e) { toast(e.message, "bad"); }
   },
   "st-xlsx": (el, e) => { e.stopPropagation(); downloadStatementXlsx(S.statements.find((x) => x.id === Number(el.dataset.id))).catch((err) => toast("Không tạo được file Excel: " + err.message, "bad")); },
@@ -1581,18 +1745,10 @@ const A = {
     if (!box.dataset.id && c) return toast(`Mã khách hàng ${code} đã tồn tại.`, "bad");
     if (!c) S.customers.push((c = { code }));
     Object.assign(c, { name: v("name"), phone: v("phone"), email: v("email").toLowerCase(), address: v("address"), saleId: v("saleId") || null, currency: v("currency"), group: v("group") || null, adjust: adj, sheet: v("sheet"), note: v("note") });
-    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => o.customer === c.code && reprice(S, o, cat) && n++);
-    save(); closeDialog(); render(); toast(box.dataset.id ? `Đã lưu ${c.code}; tính lại giá ${n} đơn chưa khóa.` : `Đã thêm khách hàng ${c.code} — ${c.name}.`);
+    const rr = repriceWhere(S, (o) => o.customer === c.code);
+    save(); closeDialog(); render(); toast(box.dataset.id ? `Đã lưu ${c.code}; ${RS.repriceMessage(rr) || "khách chưa có đơn để tính lại"}.` : `Đã thêm khách hàng ${c.code} — ${c.name}.`);
   },
-  "gr-edit": (el) => {
-    const g = S.groups.find((x) => x.code === el.dataset.id);
-    openDialog(g ? `Sửa nhóm giá ${g.code}` : "Thêm nhóm giá", `<div class="grid gap-3" id="f-gr" data-id="${esc(g?.code || "")}">
-    <div class="grid gap-3 sm:grid-cols-2"><label class="f"><span>Mã nhóm *</span><input class="inp uppercase" name="code" value="${esc(g?.code || "")}" ${g ? "readonly" : ""} placeholder="VD: CA_NHAN"></label>
-    <label class="f"><span>Tên nhóm *</span><input class="inp" name="name" value="${esc(g?.name || "")}"></label>
-    <label class="f"><span>% so với giá chung</span><input class="inp" name="adjust" value="${esc(g?.adjust ?? "0")}"><span class="text-xs muted">10 = cao hơn giá chung 10%; -5 = thấp hơn 5%</span></label>
-    <label class="flex items-center gap-2 text-sm"><input type="checkbox" name="active" ${g?.active ?? true ? "checked" : ""}> Đang hoạt động</label></div>
-    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="gr-save">Lưu & tính lại giá</button></div></div>`);
-  },
+  "gr-edit": (el) => groupDialog(el.dataset.id),
   "gr-save": () => {
     const box = $("#f-gr"), v = (n) => $(`[name=${n}]`, box).value.trim();
     const code = (box.dataset.id || v("code")).toUpperCase(), adj = v("adjust").replace(",", ".");
@@ -1602,26 +1758,61 @@ const A = {
     if (!box.dataset.id && g) return toast(`Nhóm ${code} đã có.`, "bad");
     if (!g) S.groups.push((g = { code, note: "" }));
     Object.assign(g, { name: v("name"), adjust: adj, active: $("[name=active]", box).checked });
-    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => cust(o.customer)?.group === code && reprice(S, o, cat) && n++);
-    save(); closeDialog(); render(); toast(`Đã lưu nhóm ${code}; tính lại ${n} đơn chưa khóa giá.`);
+    const r = repriceWhere(S, (o) => cust(o.customer)?.group === code);
+    save(); render(); groupDialog(code);
+    toast(`Đã lưu nhóm ${code} (${GT.pctLabel(adj)}); ${RS.repriceMessage(r) || "nhóm chưa có đơn nào để tính lại"}.`);
+  },
+  "gr-view": (el) => priceVersionPreview(el.dataset.id, el.dataset.back),
+  "gr-own": () => {
+    const code = $("#f-gr").dataset.id, route = $("#gr-own-route").value, from = $("#gr-own-from").value;
+    if (!route) return toast("Chọn tuyến.", "bad");
+    if (!from) return toast("Chọn ngày hiệu lực.", "bad");
+    const g = S.groups.find((x) => x.code === code);
+    const base = S.versions.filter((v) => v.routeCode === route && v.kind === "SELL" && !v.customerCode && !v.priceGroupCode && (v.status || "ACTIVE") === "ACTIVE" && v.effectiveFrom <= from && (!v.effectiveTo || v.effectiveTo >= from)).sort((x, y) => (x.effectiveFrom < y.effectiveFrom ? 1 : -1))[0];
+    if (!base) return toast(`Tuyến ${route} chưa có bảng giá bán chung hiệu lực ngày ${V.viDate(from)} để sao chép — hãy import bảng giá riêng cho nhóm.`, "bad");
+    let res;
+    try {
+      res = addPriceVersion(S, { routeCode: route, kind: "SELL", scope: { type: "GROUP", code }, from, mode: base.mode, currency: base.currency || "VND", name: `${route} · Giá bán · Nhóm ${code}`, note: `Sao chép bảng giá bán chung (từ ${V.viDate(base.effectiveFrom)}) × (1 ${Number(g.adjust) < 0 ? "−" : "+"} ${Math.abs(Number(g.adjust))}%)`, zones: GT.scaleZones(base.zones, g.adjust, base.currency || "VND") });
+    } catch (e) { return toast(e.message, "bad"); }
+    const r = repriceWhere(S, (o) => cust(o.customer)?.group === code);
+    save(); render(); groupDialog(code);
+    toast(`Đã tạo bảng giá bán riêng tuyến ${route} cho nhóm ${code} từ ${V.viDate(from)}${res.closed ? ` (chốt ${res.closed} phiên bản riêng cũ)` : ""}; ${RS.repriceMessage(r) || "chưa có đơn nào để tính lại"}.`);
+  },
+  "gr-member": (el) => {
+    const code = $("#f-gr").dataset.id, c = cust(el.dataset.id || $("#gr-add-member").value);
+    if (!c) return toast("Chọn khách hàng.", "bad");
+    const to = el.dataset.rm ? null : code;
+    c.group = to;
+    const r = repriceWhere(S, (o) => o.customer === c.code);
+    save(); render(); groupDialog(code);
+    toast(`${to ? `Đã chuyển ${c.code} vào nhóm ${code}` : `Đã bỏ ${c.code} khỏi nhóm (dùng giá chung)`}; ${RS.repriceMessage(r) || "khách chưa có đơn để tính lại"}.`);
   },
   "ro-edit": (el) => {
-    const r = S.routes.find((x) => x.code === el.dataset.id);
-    openDialog(`Sửa tuyến ${r.code}`, `<div class="grid gap-3" id="f-ro" data-id="${esc(r.code)}">
-    <label class="f"><span>Loại hình dịch vụ</span><select class="inp" name="service">${["EPK", "CPN", "CT"].map((s) => `<option ${s === r.service ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+    const r0 = S.routes.find((x) => x.code === el.dataset.id), isNew = !r0, r = r0 || { code: "", supplier: "", service: "EPK", mode: "MAX_ACTUAL_VOL", dim: "5000" };
+    const sups = [...new Set(S.routes.map((x) => x.supplier).filter(Boolean))].sort();
+    openDialog(isNew ? "Thêm tuyến vận chuyển mới" : `Sửa tuyến ${r.code}`, `<div class="grid gap-3" id="f-ro" data-id="${esc(r0?.code || "")}">
+    <div class="grid gap-3 sm:grid-cols-2">
+    <label class="f"><span>Mã tuyến *</span><input class="inp uppercase" name="code" value="${esc(r.code)}" ${isNew ? "" : "readonly"} placeholder="VD: UPS HAN S6000"><span class="text-xs muted">Phải trùng tên tuyến trong file bảng giá & cột Tuyến vận chuyển của đơn.</span></label>
+    <label class="f"><span>Nhà cung cấp (NCC) *</span><input class="inp uppercase" name="supplier" value="${esc(r.supplier || "")}" list="ro-sups" placeholder="VD: YUN"><datalist id="ro-sups">${sups.map((x) => `<option value="${esc(x)}">`).join("")}</datalist></label></div>
+    <label class="f"><span>Loại hình dịch vụ</span><select class="inp" name="service">${["EPK", "CPN", "CT"].map((s) => `<option value="${s}" ${s === r.service ? "selected" : ""}>${s} — ${SVC_ROUND[s]}</option>`).join("")}</select></label>
     <fieldset class="card grid gap-2 p-3"><legend class="px-1 text-sm font-medium">Cách tính cân (weight_calc_mode)</legend>
     <label class="flex items-start gap-2 text-sm"><input type="radio" name="mode" value="MAX_ACTUAL_VOL" ${r.mode === "MAX_ACTUAL_VOL" ? "checked" : ""}><span><b>Lấy max (cân thực, thể tích)</b><br><span class="text-xs muted">So sánh cân thực với D×R×C / DIM</span></span></label>
     <label class="flex items-start gap-2 text-sm"><input type="radio" name="mode" value="ACTUAL_ONLY" ${r.mode === "ACTUAL_ONLY" ? "checked" : ""}><span><b>Chỉ cân thực</b><br><span class="text-xs muted">Bỏ qua thể tích, không dùng DIM</span></span></label>
     <label class="f"><span>Hệ số DIM</span><input class="inp" name="dim" value="${esc(r.dim)}"></label></fieldset>
-    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="ro-save">Lưu & tính lại giá</button></div></div>`);
+    <div class="flex justify-end gap-2"><button class="btn o" data-a="close">Hủy</button><button class="btn" data-a="ro-save">${isNew ? "Thêm tuyến" : "Lưu & tính lại giá"}</button></div>${isNew ? `<p class="text-xs muted">Sau khi thêm, vào Bảng giá để tải giá gốc / giá bán cho tuyến này; đơn của tuyến chưa có bảng giá sẽ báo thiếu giá.</p>` : ""}</div>`);
   },
   "ro-save": () => {
-    const box = $("#f-ro"), r = S.routes.find((x) => x.code === box.dataset.id);
+    const box = $("#f-ro"), code = (box.dataset.id || $("[name=code]", box).value).trim().replace(/\s+/g, " ").toUpperCase(), supplier = $("[name=supplier]", box).value.trim().toUpperCase();
+    if (!code) return toast("Nhập mã tuyến.", "bad");
+    if (!supplier) return toast("Nhập nhà cung cấp.", "bad");
+    let r = S.routes.find((x) => x.code.toUpperCase() === code);
+    if (!box.dataset.id && r) return toast(`Tuyến ${code} đã tồn tại.`, "bad");
     const dim = IX.parseNumberCell($("[name=dim]", box).value.trim(), "price");
     if (!dim || dim === "0") return toast("Hệ số DIM phải lớn hơn 0.", "bad");
-    Object.assign(r, { service: $("[name=service]", box).value, mode: $("[name=mode]:checked", box).value, dim });
-    const cat = catalogOf(S); let n = 0; S.orders.forEach((o) => (o.route === r.code || o.assigned === r.code) && reprice(S, o, cat) && n++);
-    save(); closeDialog(); render(); toast(`Đã lưu ${r.code}; tính lại ${n} đơn chưa khóa giá.`);
+    if (!r) S.routes.push((r = { code, name: code }));
+    Object.assign(r, { supplier, service: $("[name=service]", box).value, mode: $("[name=mode]:checked", box).value, dim });
+    const rr = repriceWhere(S, (o) => o.route === r.code || o.assigned === r.code);
+    save(); closeDialog(); render(); toast(box.dataset.id ? `Đã lưu ${r.code}; ${RS.repriceMessage(rr) || "không có đơn nào dùng tuyến này"}.` : `Đã thêm tuyến ${r.code} (${r.supplier} · ${r.service}).${rr.repriced ? ` ${RS.repriceMessage(rr)}.` : ""}`);
   },
 };
 
@@ -1637,6 +1828,7 @@ document.addEventListener("change", (e) => {
   if (!c) return;
   if (c === "role") { S.me = el.value; ui.orders.sel.clear(); ui.rc = null; ui.st = ui.stNew = ui.ver = null; save(); if (location.hash.slice(1) !== current()) location.hash = current(); render(); toast(`Đang dùng vai trò ${P.ROLE_LABEL[me().role]} — ${me().name}.`); }
   else if (c === "nav") location.hash = el.value;
+  else if (c === "o-quick") { ui.orders[el.dataset.k] = el.value; ui.orders.page = 1; render(); }
   else if (c.startsWith("dash.")) { ui.dash[c.slice(5)] = el.value; render(); }
   else if (c === "sel") { const id = Number(el.value); el.checked ? ui.orders.sel.add(id) : ui.orders.sel.delete(id); render(); }
   else if (c === "sel-page") { $$('[data-c="sel"]').forEach((x) => (el.checked ? ui.orders.sel.add(Number(x.value)) : ui.orders.sel.delete(Number(x.value)))); render(); }
@@ -1647,11 +1839,13 @@ document.addEventListener("change", (e) => {
   else if (c === "imp-file") readImportFile(el.files[0]);
   else if (c === "tpl-cust") templateDialog(el.value);
   else if (c === "pi-file") readPriceFile(el.files[0]);
+  else if (c === "pi-kind") { $("#pi-scope-box").style.display = el.value === "SELL" ? "" : "none"; $("#pi-commit").disabled = true; }
+  else if (c === "pi-scope") { $("#pi-scode-box").style.display = el.value === "DEFAULT" ? "none" : ""; $("#pi-scode-label").textContent = el.value === "CUSTOMER" ? "Khách hàng *" : "Nhóm giá *"; $("#pi-scode").innerHTML = scopeOptions(el.value); $("#pi-commit").disabled = true; }
   else if (c === "ver-kind") { ui.verKind = el.value; render(); }
-  else if (c === "stn-cust") { ui.stNew = { ...ui.stNew, cust: el.value, sel: new Set() }; render(); }
+  else if (c === "stn-cust") { ui.stNew = { ...ui.stNew, cust: el.value, sel: new Set() }; if (ui.stNew.q) stnLookup(ui.stNew)?.ok.forEach((o) => ui.stNew.sel.add(o.id)); render(); }
   else if (c === "stn-from" || c === "stn-to") { ui.stNew[c.slice(4)] = el.value; render(); }
   else if (c === "stn-sel") { const id = Number(el.value); el.checked ? ui.stNew.sel.add(id) : ui.stNew.sel.delete(id); render(); }
-  else if (c === "stn-all") { const ids = S.orders.filter((o) => o.customer === ui.stNew.cust && o.debt === "Chưa thanh toán" && (!ui.stNew.from || pd(o) >= ui.stNew.from) && (!ui.stNew.to || pd(o) <= ui.stNew.to)).map((o) => o.id); ui.stNew.sel = el.checked ? new Set(ids) : new Set(); render(); }
+  else if (c === "stn-all") { const n = ui.stNew, lk = stnLookup(n), ok = lk ? new Set(lk.ok.map((o) => o.id)) : null; const ids = S.orders.filter((o) => stnBase(o, n) && (ok ? ok.has(o.id) : (!n.from || pd(o) >= n.from) && (!n.to || pd(o) <= n.to))).map((o) => o.id); ids.forEach((id) => (el.checked ? n.sel.add(id) : n.sel.delete(id))); render(); }
   else if (c === "rc-cust") { ui.rc = { cust: el.value, amount: "", alloc: {}, manual: false, proofs: [], done: null, tab: ui.rc?.tab || "form", lf: ui.rc?.lf || { q: "", from: "", to: "", status: "ACTIVE" } }; render(); }
   else if (c === "rl-from" || c === "rl-to" || c === "rl-status") { ui.rc.lf[c.slice(3)] = el.value; render(); }
   else if (c === "rc-file") { addProofs([...el.files]); el.value = ""; }
@@ -1690,6 +1884,7 @@ document.addEventListener("contextmenu", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeCopyMenu();
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && e.target.id === "o-q") A["o-search"]();
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && e.target.id === "stn-q") A["stn-search"]();
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && e.target.id === "st-q") A["st-search"]();
 });
 addEventListener("scroll", () => Date.now() - (openCopyMenu.at || 0) > 250 && closeCopyMenu(), true); // bỏ qua cuộn quán tính ngay lúc mở menu
@@ -1698,7 +1893,9 @@ document.addEventListener("paste", (e) => {
   const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
   if (files.length) { e.preventDefault(); addProofs(files); toast("Đã dán ảnh minh chứng."); }
 });
-addEventListener("hashchange", () => { ui.ver = ui.st = ui.stNew = null; render(); });
+addEventListener("scroll", () => { if (ui.lastView) ui.scroll[ui.lastView] = window.scrollY; }, { passive: true });
+document.addEventListener("auxclick", (e) => { const t = e.button === 1 && e.target.closest("[data-tab]"); if (t) { e.preventDefault(); closeTab(t.dataset.tab); } });
+addEventListener("hashchange", () => { ui.ver = null; ui.st = ui.stOpen ?? null; ui.stOpen = null; render(); });
 render();
 if (fixedSync) { save(); toast(`Đã gỡ ${fixedSync} đơn bị đồng bộ nhầm (lỗi sheet mô phỏng dùng chung). Đồng bộ lại để lấy đơn đúng của từng khách.`, "warn"); }
 }

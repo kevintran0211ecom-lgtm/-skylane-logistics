@@ -8,8 +8,10 @@ import { requirePage } from "@/lib/auth/session";
 
 export const metadata = { title: "Import bảng giá — SkyLane" };
 
-export default async function ImportPage() {
+export default async function ImportPage({ searchParams }: { searchParams: Promise<{ scope?: string; code?: string }> }) {
   await requirePage("pricing.manage");
+  const sp = await searchParams;
+  const initialScope = sp.scope === "GROUP" || sp.scope === "CUSTOMER" ? { type: sp.scope as "GROUP" | "CUSTOMER", code: (sp.code ?? "").toUpperCase() } : null;
   const [groups, customers] = await Promise.all([listPriceGroups(), listCustomerOptions()]);
   return (
     <>
@@ -20,7 +22,7 @@ export default async function ImportPage() {
         title="Import bảng giá Excel"
         description="Ma trận ngang: dòng 1 tên tuyến (gộp ô theo cụm), dòng 2 “Khối lượng (KG)” + các cột nước “US – Mỹ (VND)”."
       />
-      <ImportForm groups={groups} customers={customers} />
+      <ImportForm groups={groups} customers={customers} initialScope={initialScope} />
     </>
   );
 }

@@ -55,6 +55,13 @@ table.t tr.sel td.fz{background:var(--soft)}
 .b-ok{background:light-dark(#d1fae5,#064e3b);color:light-dark(#065f46,#a7f3d0)}.b-warn{background:light-dark(#fef3c7,#78350f);color:light-dark(#92400e,#fde68a)}
 .b-bad{background:light-dark(#fee2e2,#7f1d1d);color:light-dark(#991b1b,#fecaca)}
 .nav a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;color:var(--ink);text-decoration:none}
+.tabs{position:sticky;top:0;z-index:20;display:flex;align-items:flex-end;gap:2px;overflow-x:auto;scrollbar-width:thin;background:var(--bg);border-bottom:1px solid var(--line);margin:0 0 16px;padding-top:6px}
+.tab{display:flex;align-items:center;flex-shrink:0;max-width:220px;height:34px;border:1px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;color:var(--muted);margin-bottom:-1px}
+.tab a{display:block;padding:0 4px 0 12px;line-height:34px;color:inherit;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab:hover{background:var(--soft);color:var(--ink)}
+.tab.on{background:var(--card);border-color:var(--line);color:var(--brand);font-weight:600;box-shadow:inset 0 2px 0 var(--accent)}
+.tab .x{width:22px;height:22px;margin-right:6px;border:0;border-radius:5px;background:transparent;color:inherit;cursor:pointer;font-size:15px;line-height:1;opacity:.55}
+.tab .x:hover{opacity:1;background:color-mix(in srgb,var(--muted) 18%,transparent)}
 .nav a:hover{background:var(--soft)}.nav a.on{background:var(--soft);color:var(--brand);font-weight:600}
 dialog{border:1px solid var(--line);border-radius:14px;padding:0;background:var(--card);color:var(--ink);width:min(980px,calc(100% - 24px));max-height:90vh}
 dialog::backdrop{background:rgb(15 23 42/.45)}

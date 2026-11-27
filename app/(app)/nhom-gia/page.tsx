@@ -15,7 +15,7 @@ export default async function PriceGroupsPage() {
         title="Nhóm giá"
         description="Mỗi nhóm khai báo % so với bảng giá chung. Tuyến nào nhóm có bảng giá bán riêng (nhập ở Kho bảng giá) thì dùng bảng riêng, không cộng %."
       />
-      <PriceGroupsView rows={rows} canManage={can(user.role, "catalog.manage")} />
+      <PriceGroupsView rows={rows} canManage={can(user.role, "catalog.manage")} canPricing={can(user.role, "pricing.manage")} />
     </>
   );
 }

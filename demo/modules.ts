@@ -7,6 +7,8 @@ export * as engine from "../lib/pricing/engine";
 export * as importExcel from "../lib/pricing/import-excel";
 export * as versioning from "../lib/pricing/versioning";
 export * as priceTemplate from "../lib/pricing/template";
+export * as groupTable from "../lib/pricing/group-table";
+export * as repriceSummary from "../lib/orders/reprice-summary";
 export * as importParse from "../lib/orders/import-parse";
 export * as edit from "../lib/orders/edit";
 export * as orderTemplate from "../lib/orders/template";

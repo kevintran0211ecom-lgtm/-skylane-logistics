@@ -26,6 +26,7 @@ export function CustomersView(props: {
   canManage: boolean;
 }) {
   const [editing, setEditing] = useState<CustomerRow | "new" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const columns = useMemo<ColumnDef<CustomerRow, unknown>[]>(
     () => [
@@ -81,6 +82,11 @@ export function CustomersView(props: {
           </Button>
         </div>
       )}
+      {notice && (
+        <Alert tone="success" className="mb-3">
+          {notice}
+        </Alert>
+      )}
       <DataTable columns={columns} data={props.rows} total={props.total} page={props.page} pageSize={props.pageSize} empty="Chưa có khách hàng." />
       <Dialog
         open={editing !== null}
@@ -94,7 +100,10 @@ export function CustomersView(props: {
             row={editing === "new" ? null : editing}
             groups={props.groups}
             users={props.users}
-            onDone={() => setEditing(null)}
+            onDone={(msg) => {
+              setEditing(null);
+              if (msg) setNotice(msg);
+            }}
           />
         )}
       </Dialog>
@@ -102,11 +111,11 @@ export function CustomersView(props: {
   );
 }
 
-function CustomerForm({ row, groups, users, onDone }: { row: CustomerRow | null; groups: Option[]; users: User[]; onDone: () => void }) {
+function CustomerForm({ row, groups, users, onDone }: { row: CustomerRow | null; groups: Option[]; users: User[]; onDone: (message?: string) => void }) {
   const [state, action, pending] = useActionState(saveCustomer, null);
   const [syncSource, setSyncSource] = useState<string>(row?.syncSourceType ?? "NONE");
   useEffect(() => {
-    if (state?.ok) onDone();
+    if (state?.ok) onDone(state.message);
   }, [state, onDone]);
   const err = state && !state.ok ? state.fieldErrors ?? {} : {};
 
@@ -201,7 +210,7 @@ function CustomerForm({ row, groups, users, onDone }: { row: CustomerRow | null;
           <Checkbox name="isActive" defaultChecked={row?.isActive ?? true} /> Đang hoạt động
         </label>
         <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={onDone}>
+          <Button type="button" variant="outline" onClick={() => onDone()}>
             Hủy
           </Button>
           <Button type="submit" disabled={pending}>

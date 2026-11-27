@@ -188,7 +188,8 @@ async function insertChunks<T>(rows: T[], insert: (chunk: T[]) => Promise<unknow
   for (let i = 0; i < rows.length; i += CHUNK) await insert(rows.slice(i, i + CHUNK));
 }
 
-async function insertBlock(tx: Tx, b: ImportBlock, o: ImportOptions, fileName: string, result: ImportCommitResult) {
+/** Ghi 1 khối bảng giá thành phiên bản mới (chốt ngày kết thúc phiên bản cũ cùng phạm vi). Dùng cho import & tạo bảng riêng của nhóm. */
+export async function insertBlock(tx: Tx, b: ImportBlock, o: ImportOptions, sourceNote: string, result: ImportCommitResult) {
   const existing = await activeVersions(tx, b.routeCode, o, true);
   const plan = planNewVersion(existing, o.effectiveFrom);
   if (!plan.ok) throw new ImportError(`${b.routeCode}: ${plan.error}`);
@@ -213,7 +214,7 @@ async function insertBlock(tx: Tx, b: ImportBlock, o: ImportOptions, fileName: s
       effectiveFrom: o.effectiveFrom,
       effectiveTo: plan.newEffectiveTo,
       status: "ACTIVE",
-      note: [`Import từ file "${fileName}" (${b.sheet}!${b.cellRef})`, o.note].filter(Boolean).join(" — "),
+      note: [sourceNote, o.note].filter(Boolean).join(" — "),
     })
     .returning({ id: pricingVersions.id });
 
@@ -252,7 +253,7 @@ export async function commitImport(file: File, options: ImportOptions): Promise<
 
   const result: ImportCommitResult = { created: [], closed: [] };
   await db.transaction(async (tx) => {
-    for (const b of blocks) await insertBlock(tx, b, options, file.name, result);
+    for (const b of blocks) await insertBlock(tx, b, options, `Import từ file "${file.name}" (${b.sheet}!${b.cellRef})`, result);
   });
   return result;
 }

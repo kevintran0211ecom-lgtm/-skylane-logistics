@@ -19,11 +19,20 @@ const firstOfMonth = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
 };
 
-export function ImportForm({ groups, customers }: { groups: Option[]; customers: Option[] }) {
+export function ImportForm({
+  groups,
+  customers,
+  initialScope,
+}: {
+  groups: Option[];
+  customers: Option[];
+  /** Mở từ Nhóm giá / Khách hàng: chọn sẵn Giá bán + phạm vi */
+  initialScope?: { type: "GROUP" | "CUSTOMER"; code: string } | null;
+}) {
   const [preview, previewAction, previewing] = useActionState(previewPriceImport, null);
   const [commit, commitAction, committing] = useActionState(commitPriceImport, null);
-  const [kind, setKind] = useState<"COST" | "SELL">("COST");
-  const [scopeType, setScopeType] = useState("DEFAULT");
+  const [kind, setKind] = useState<"COST" | "SELL">(initialScope ? "SELL" : "COST");
+  const [scopeType, setScopeType] = useState<string>(initialScope?.type ?? "DEFAULT");
   const [stale, setStale] = useState(true); // form đã đổi sau lần xem trước gần nhất
 
   useEffect(() => {
@@ -101,7 +110,7 @@ export function ImportForm({ groups, customers }: { groups: Option[]; customers:
             </Field>
             {scopeType !== "DEFAULT" && (
               <Field label={scopeType === "GROUP" ? "Nhóm giá *" : "Khách hàng *"} htmlFor="scopeCode">
-                <NativeSelect id="scopeCode" name="scopeCode" required defaultValue="">
+                <NativeSelect id="scopeCode" name="scopeCode" required defaultValue={initialScope?.type === scopeType ? initialScope.code : ""}>
                   <option value="" disabled>
                     — Chọn —
                   </option>

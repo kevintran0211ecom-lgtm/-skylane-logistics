@@ -5,11 +5,8 @@ import { customers, orderPackages, orders, priceGroups } from "@/drizzle/schema"
 import { calcOrderPricing, PricingError, type OverrideField, type OrderPricingResult } from "@/lib/pricing/engine";
 import { loadPricingCatalog } from "@/lib/pricing/catalog";
 
-export interface RepriceReport {
-  repriced: number; // đã tính lại cân & giá
-  locked: number; // bỏ qua vì đã khóa giá
-  failed: { billCode: string; message: string }[]; // tính được cân nhưng không tra được giá (giữ tiền cũ)
-}
+import { addRepriced, emptyReport, repriceMessage, type RepriceReport } from "./reprice-summary";
+export { repriceMessage, type RepriceReport };
 
 const CHUNK = 500;
 const values = (rows: SQL[]) => sql.join(rows, sql`, `);
@@ -22,7 +19,7 @@ const values = (rows: SQL[]) => sql.join(rows, sql`, `);
  * - Không tra được giá (thiếu bảng giá / vùng / mốc): vẫn cập nhật cân, giữ tiền cũ, báo lỗi.
  */
 export async function repriceOrders(tx: Tx, orderIds: number[]): Promise<RepriceReport> {
-  const report: RepriceReport = { repriced: 0, locked: 0, failed: [] };
+  const report: RepriceReport = emptyReport();
   if (orderIds.length === 0) return report;
 
   const rows = await tx
@@ -124,6 +121,7 @@ export async function repriceOrders(tx: Tx, orderIds: number[]): Promise<Reprice
 
     const b = result.billed;
     const s = result.shipped;
+    if (!keepVersions) addRepriced(report, o.sellAmount, b.amount, b.scope);
     orderUpdates.push(
       sql`(${o.id}::bigint, ${packages.length}::int, ${b.totalActual}::numeric, ${b.totalVolumetric}::numeric,
            ${b.weight}::numeric, ${s.weight}::numeric, ${b.amount}::numeric, ${s.amount}::numeric,
@@ -160,18 +158,9 @@ export async function repriceOrders(tx: Tx, orderIds: number[]): Promise<Reprice
   return report;
 }
 
-/** Thông báo ngắn gọn cho người dùng */
-export function repriceMessage(r: RepriceReport): string {
-  const parts: string[] = [];
-  if (r.repriced) parts.push(`tính lại giá ${r.repriced} đơn`);
-  if (r.locked) parts.push(`${r.locked} đơn đã khóa giá giữ nguyên`);
-  if (r.failed.length) parts.push(`${r.failed.length} đơn chưa tra được giá`);
-  return parts.join(", ");
-}
-
 /** Tính lại giá mọi đơn CHƯA khóa giá của các khách hàng (khi đổi nhóm giá / % điều chỉnh) */
 export async function repriceOpenOrdersOfCustomers(tx: Tx, customerCodes: string[]): Promise<RepriceReport> {
-  if (!customerCodes.length) return { repriced: 0, locked: 0, failed: [] };
+  if (!customerCodes.length) return emptyReport();
   const ids = await tx
     .select({ id: orders.id })
     .from(orders)

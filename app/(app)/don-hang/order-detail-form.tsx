@@ -10,6 +10,7 @@ import { ORDER_EDIT_LABEL as L, isoToLocal, type OrderEditField } from "@/lib/or
 import type { OrderDetail } from "@/lib/orders/queries";
 import { ORDER_STATUSES } from "@/lib/orders/schemas";
 import { amountFromUnit, unitPrice } from "@/lib/orders/totals";
+import { SCOPE_LABEL } from "@/lib/orders/reprice-summary";
 import { formatThousands, parseThousands } from "@/lib/receipts/format";
 import { formatKg } from "@/lib/labels";
 import { submitWithoutReset } from "@/lib/form-submit";
@@ -219,7 +220,7 @@ export function OrderDetailForm({
       {showMoney && (
         <fieldset className="grid gap-3 sm:grid-cols-4">
           <legend className="mb-2 text-sm font-semibold">Giá (VND) — để trống = tự tính theo bảng giá</legend>
-          <Field label={L.sellAmount} htmlFor="od-sell" error={err.sellAmount} hint={sell ? <span className="text-amber-700">Ghi đè thủ công</span> : `Tự tính: ${formatMoney(o.sellAmount)}`}>
+          <Field label={L.sellAmount} htmlFor="od-sell" error={err.sellAmount} hint={sell ? <span className="text-amber-700">Ghi đè thủ công</span> : `Tự tính: ${formatMoney(o.sellAmount)}${o.sellScope ? ` · ${SCOPE_LABEL[o.sellScope]}` : ""}`}>
             <Input
               id="od-sell"
               name={name("sellAmount")}

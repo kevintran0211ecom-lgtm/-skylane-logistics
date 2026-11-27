@@ -8,6 +8,8 @@ import { formToObject, zodFieldErrors, type ActionState } from "@/lib/action-sta
 import { customers, priceGroups, routes, suppliers } from "@/drizzle/schema";
 import { customerSchema, priceGroupSchema, routeSchema } from "./schemas";
 import { repriceMessage, repriceOpenOrdersOfCustomers } from "@/lib/orders/reprice";
+import { createGroupOwnTable, getPriceGroupDetail, GroupTableError, setCustomerGroup, type PriceGroupDetail } from "@/lib/pricing/group-service";
+import { isIsoDate, viDate } from "@/lib/pricing/versioning";
 import { guard } from "@/lib/auth/session";
 
 // =============================================================================
@@ -154,4 +156,51 @@ export async function saveRoute(_prev: ActionState, formData: FormData): Promise
   }
   revalidatePath("/tuyen");
   return { ok: true, message: d.mode === "create" ? `Đã thêm tuyến ${d.routeCode}.` : `Đã cập nhật tuyến ${d.routeCode}.` };
+}
+
+// =============================================================================
+// Nhóm giá: chi tiết bảng giá theo tuyến, thêm tuyến bảng giá riêng, gán khách
+// =============================================================================
+export async function getPriceGroupDetailAction(code: string): Promise<{ ok: true; data: PriceGroupDetail } | { ok: false; error: string }> {
+  const g = await guard("catalog.view");
+  if (!g.ok) return g;
+  const d = await getPriceGroupDetail(code);
+  return d ? { ok: true, data: d } : { ok: false, error: `Không tìm thấy nhóm giá ${code}.` };
+}
+
+export async function addGroupOwnTableAction(_p: ActionState, fd: FormData): Promise<ActionState> {
+  const g = await guard("pricing.manage");
+  if (!g.ok) return g;
+  const groupCode = String(fd.get("groupCode") ?? "").trim().toUpperCase();
+  const routeCode = String(fd.get("routeCode") ?? "").trim().toUpperCase();
+  const effectiveFrom = String(fd.get("effectiveFrom") ?? "");
+  if (!routeCode) return { ok: false, error: "Chọn tuyến.", fieldErrors: { routeCode: "Chọn tuyến" } };
+  if (!isIsoDate(effectiveFrom)) return { ok: false, error: "Chọn ngày hiệu lực.", fieldErrors: { effectiveFrom: "Chọn ngày hiệu lực" } };
+  try {
+    const r = await createGroupOwnTable(groupCode, routeCode, effectiveFrom);
+    revalidatePath("/nhom-gia");
+    revalidatePath("/bang-gia");
+    const extra = repriceMessage(r.reprice);
+    return { ok: true, message: `Đã tạo bảng giá bán riêng tuyến ${routeCode} cho nhóm ${groupCode} từ ${viDate(effectiveFrom)}${r.result.closed.length ? ` (chốt ${r.result.closed.length} phiên bản riêng cũ)` : ""}${extra ? `; ${extra}` : ""}.` };
+  } catch (e) {
+    if (e instanceof GroupTableError) return { ok: false, error: e.message };
+    return { ok: false, error: e instanceof Error && /Trùng|chồng/i.test(e.message) ? e.message : dbErrorMessage(e, "Không tạo được bảng giá riêng.") };
+  }
+}
+
+export async function setCustomerGroupAction(_p: ActionState, fd: FormData): Promise<ActionState> {
+  const g = await guard("catalog.manage");
+  if (!g.ok) return g;
+  const customerCode = String(fd.get("customerCode") ?? "").trim().toUpperCase();
+  const groupCode = String(fd.get("groupCode") ?? "").trim().toUpperCase() || null;
+  if (!customerCode) return { ok: false, error: "Chọn khách hàng." };
+  try {
+    const extra = repriceMessage(await setCustomerGroup(customerCode, groupCode));
+    revalidatePath("/nhom-gia");
+    revalidatePath("/khach-hang");
+    return { ok: true, message: `${groupCode ? `Đã chuyển ${customerCode} vào nhóm ${groupCode}` : `Đã bỏ ${customerCode} khỏi nhóm (dùng giá chung)`}${extra ? `; ${extra}` : ""}.` };
+  } catch (e) {
+    if (e instanceof GroupTableError) return { ok: false, error: e.message };
+    return { ok: false, error: dbErrorMessage(e) };
+  }
 }
