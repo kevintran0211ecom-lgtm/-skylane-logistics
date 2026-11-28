@@ -3,7 +3,7 @@
 // Module thật của dự án (biên dịch từ lib/*.ts)
 // =============================================================================
 const E = __M.engine, IX = __M.importExcel, V = __M.versioning, IP = __M.importParse, SF = __M.statementFmt, RF = __M.receiptFmt, P = __M.permissions;
-const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary, QI = __M.quoteInput;
+const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary, QI = __M.quoteInput, SQ = __M.sellQuote;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -374,6 +374,7 @@ const VIEWS = {
   "don-du-bao": { label: "Đơn hàng dự báo", perm: "drafts.view", group: "Vận hành" },
   "don-hang": { label: "Vận đơn", perm: "orders.view", group: "Vận hành" },
   "bao-gia": { label: "Tra cứu giá gốc", perm: "quote.view", group: "Vận hành" },
+  "gia-ban": { label: "Tra cứu giá bán", perm: "quote.view", group: "Vận hành" },
   "bang-ke": { label: "Bảng kê", perm: "statements.view", group: "Tài chính" },
   "tao-bang-ke": { label: "Tạo bảng kê", perm: "statements.manage", group: "Tài chính" },
   "doi-soat": { label: "Đối soát thu tiền", perm: "receipts.view", group: "Tài chính" },
@@ -390,7 +391,7 @@ const ui = {
   dash: { from: "2026-11-01", to: today() < "2026-11-01" ? "2026-11-30" : today(), cust: "", sale: "", table: false },
   orders: { q: "", status: "", cust: "", asg: "", iso2: "", page: 1, sel: new Set(), df: "sent", from: "", to: "", sort: "", dir: "asc" },
   drafts: { status: "CHO_XAC_NHAN", q: "", cust: "", sel: new Set() },
-  quote: { to: "US", kg: "1,5", cbm: "", ncc: "", dv: "", date: today(), rows: [{ qty: "2", kg: "1,5", l: "30", w: "20", h: "15" }], ran: true },
+  quote: { kh: "SKL116", to: "US", kg: "1,5", cbm: "", ncc: "", dv: "", date: today(), rows: [{ qty: "2", kg: "1,5", l: "30", w: "20", h: "15" }], ran: true },
   ver: null, verKind: "", verRoute: "", st: null, stNew: null, rc: null, stq: { q: "", sort: "", dir: "asc" },
 };
 
@@ -472,7 +473,7 @@ function render() {
   const v = current();
   syncTabs(v);
   if (chartRO) { chartRO.disconnect(); chartRO = null; }
-  const fn = { dashboard: vDashboard, "don-du-bao": vDrafts, "nhom-gia": vGroups, "don-hang": vOrders, "bao-gia": vQuote, "bang-ke": vStatements, "tao-bang-ke": vStatementNew, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
+  const fn = { dashboard: vDashboard, "don-du-bao": vDrafts, "nhom-gia": vGroups, "don-hang": vOrders, "bao-gia": vQuote, "gia-ban": vSellQuote, "bang-ke": vStatements, "tao-bang-ke": vStatementNew, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
   $("#app").innerHTML = shell(fn());
   if (v === "dashboard") drawChart();
   if (ui.lastView !== v) { window.scrollTo(0, ui.scroll[v] || 0); ui.lastView = v; }
@@ -1054,17 +1055,15 @@ function qpRefreshTotal() {
   if (el) el.innerHTML = `<b>${t.pieces} kiện</b> <span class="muted">· tổng cân thực ${t.kg || 0} kg${t.cbm ? ` · ${t.cbm} m³` : ""}</span>`;
 }
 const qpReopen = (focus) => { qpDialog(); if (focus) $(`[data-qp="${focus}"]`)?.focus(); };
-function vQuote() {
-  const q = ui.quote, res = q.ran ? runQuote() : null;
-  const multi = q.rows.some(qpFilled), t = qpTotals();
+function quoteFormHtml(withCustomer) {
+  const q = ui.quote, multi = q.rows.some(qpFilled), t = qpTotals();
   const sups = [...new Set(S.routes.map((r) => r.supplier).filter(Boolean))].sort();
   const inp = (k, label, ph, extra = "") => `<label class="f"><span>${label}</span><input class="inp" data-q="${k}" value="${esc(q[k])}" placeholder="${ph}" ${extra}></label>`;
   const ro = (label, v, title) => `<label class="f"><span>${label}</span><input class="inp" value="${esc(v)}" readonly style="background:var(--soft)" title="${title}"></label>`;
   const sel = (k, label, opts) => `<label class="f"><span>${label}</span><select class="inp" data-q="${k}"><option value="">Tất cả</option>${opts.map((o) => `<option ${o === q[k] ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`;
-  const inpt = res && !res.error ? res.input : null;
-  const ft = inpt ? [inpt.supplierCode && `NCC ${inpt.supplierCode}`, inpt.serviceType && `dịch vụ ${inpt.serviceType}`].filter(Boolean).join(", ") : "";
-  return head("Tra cứu báo giá tuyến gốc", "So sánh giá gốc NCC của mọi tuyến; mỗi tuyến tự áp DIM, cách tính cân và quy tắc làm tròn riêng.") + `
-  <div class="card mb-4 grid items-end gap-3 p-4 sm:grid-cols-3 lg:grid-cols-[100px_130px_130px_auto_150px_110px_150px_auto]">
+  const custs = S.customers.filter((c) => inScope(c.code));
+  return `<div class="card mb-4 grid items-end gap-3 p-4 sm:grid-cols-3 ${withCustomer ? "xl:grid-cols-[210px_100px_120px_120px_auto_140px_100px_150px_auto]" : "lg:grid-cols-[100px_130px_130px_auto_150px_110px_150px_auto]"}">
+    ${withCustomer ? `<label class="f"><span>Khách hàng</span><select class="inp" data-q="kh"><option value="">Chọn khách hàng…</option>${custs.map((c) => `<option value="${c.code}" ${c.code === q.kh ? "selected" : ""}>${c.code} — ${esc(c.name)}</option>`).join("")}</select></label>` : ""}
     ${inp("to", "Điểm đến (ISO2)", "US", 'maxlength="2"')}
     ${multi ? ro("Trọng lượng (kg)", t.kg, "Tổng cân thực các kiện") : inp("kg", "Trọng lượng (kg)", "1,5")}
     ${multi ? ro("Thể tích (CBM)", t.cbm, "Tổng thể tích các kiện có kích thước") : inp("cbm", "Thể tích (CBM)", "m³")}
@@ -1072,7 +1071,14 @@ function vQuote() {
     ${sel("ncc", "Nhà cung cấp", sups)}${sel("dv", "Dịch vụ", QI.QUOTE_SERVICE_TYPES)}
     <label class="f"><span>Ngày áp giá</span><input class="inp" type="date" data-q="date" value="${q.date}"></label>
     <button class="btn" data-a="quote-run">Tra cứu</button>
-  </div>
+  </div>`;
+}
+function vQuote() {
+  const q = ui.quote, res = q.ran ? runQuote() : null;
+  const inpt = res && !res.error ? res.input : null;
+  const ft = inpt ? [inpt.supplierCode && `NCC ${inpt.supplierCode}`, inpt.serviceType && `dịch vụ ${inpt.serviceType}`].filter(Boolean).join(", ") : "";
+  return head("Tra cứu báo giá tuyến gốc", "So sánh giá gốc NCC của mọi tuyến; mỗi tuyến tự áp DIM, cách tính cân và quy tắc làm tròn riêng.") + `
+  ${quoteFormHtml(false)}
   ${!res ? "" : res.error ? `<div class="card p-3" style="color:#dc2626">${esc(res.error)}</div>` : `
   <p class="mb-2 text-sm"><b>${res.rows.length} tuyến phù hợp</b> <span class="muted">→ ${inpt.iso2} · ${inpt.pieces} kiện · ${kg(inpt.totalActual)} kg${inpt.totalCbm ? ` · ${Number(inpt.totalCbm).toLocaleString("vi-VN", { maximumFractionDigits: 4 })} m³` : ""} · áp giá ngày ${V.viDate(inpt.date)}${ft ? ` · lọc ${ft}` : ""}</span></p>
   <div class="card scroll"><table class="t"><thead><tr><th>#</th><th>Tuyến</th><th>Dịch vụ</th><th class="num">Cân tính phí</th><th class="num">Đơn giá/kg</th><th class="num" style="background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--brand)">Tổng tiền (VND)</th><th class="num">DIM</th><th>Hiệu lực bảng giá</th></tr></thead><tbody>
@@ -1085,6 +1091,42 @@ function vQuote() {
   </tbody></table></div>
   ${res.na.length ? `<details class="mt-2 text-sm"><summary class="cursor-pointer muted">${res.na.length} tuyến không phục vụ mức cân này</summary><ul class="mt-1 list-disc pl-5 text-xs muted">${res.na.map(([c, m]) => `<li><b>${esc(c)}</b>: ${esc(m)}</li>`).join("")}</ul></details>` : ""}`}
   <p class="mt-3 text-xs muted">Thử: bấm “Kích thước thông tin” để thêm/bớt kiện; lọc theo NCC hoặc dịch vụ; đổi ngày áp giá về 15/10/2026 để thấy VNFZZXR dùng bảng giá tháng 10.</p>`;
+}
+
+function runSellQuote() {
+  const q = ui.quote;
+  if (!q.kh) return { error: "Chọn khách hàng cần tra giá bán." };
+  const c = cust(q.kh);
+  if (!c || !inScope(c.code)) return { error: `Không tìm thấy khách hàng ${q.kh}.` };
+  const { input, error } = QI.parseQuoteInput({ to: q.to, kg: q.kg, cbm: q.cbm, ncc: q.ncc, dv: q.dv, date: q.date, p: q.rows.filter(qpFilled).map(QI.encodePackageRow) }, today());
+  if (error || !input) return { error: error || "Nhập điểm đến và trọng lượng." };
+  const g = S.groups.find((x) => x.code === c.group);
+  const routes = S.routes.filter((r) => (!input.supplierCode || (r.supplier || "").toUpperCase() === input.supplierCode) && (!input.serviceType || r.service === input.serviceType)).map((r) => ({ routeCode: r.code, supplierCode: r.supplier || null }));
+  const res = SQ.quoteSellRoutes(catalogOf(S), { customerCode: c.code, priceGroupCode: c.group || null, groupAdjustPct: g?.adjust ?? null, priceAdjustPct: c.adjust || "0" }, routes, input);
+  return { ...res, input, c, g };
+}
+function vSellQuote() {
+  const q = ui.quote, res = q.ran ? runSellQuote() : null;
+  const pctL = (v) => { const n = Number(v || 0); return `${n > 0 ? "+" : ""}${n.toLocaleString("vi-VN", { maximumFractionDigits: 2 })}%`; };
+  const inpt = res && !res.error ? res.input : null;
+  const ft = inpt ? [inpt.supplierCode && `NCC ${inpt.supplierCode}`, inpt.serviceType && `dịch vụ ${inpt.serviceType}`].filter(Boolean).join(", ") : "";
+  const miss = res && !res.error ? res.unavailable.length + res.noSellPrice.length : 0;
+  return head("Tra cứu giá bán", "Giá bán đã nhập cho khách hàng trên mọi tuyến — áp đúng thứ tự giá riêng khách → bảng giá nhóm → giá chung và % điều chỉnh, như khi lên vận đơn.") + `
+  ${quoteFormHtml(true)}
+  ${!res ? "" : res.error ? `<div class="card p-3" style="color:#dc2626">${esc(res.error)}</div>` : `
+  <div class="card mb-3 flex flex-wrap gap-x-6 gap-y-1 p-3 text-sm"><span><b>${res.c.code}</b> — ${esc(res.c.name)}</span><span class="muted">Nhóm giá: <span style="color:var(--ink)">${res.g ? `${esc(res.g.name)} (${pctL(res.g.adjust)} so với giá chung)` : "Bảng giá chung"}</span></span><span class="muted">% riêng của khách: <span style="color:var(--ink)">${pctL(res.c.adjust)}</span></span></div>
+  <p class="mb-2 text-sm"><b>${res.rows.length} tuyến có giá bán</b> <span class="muted">→ ${inpt.iso2} · ${inpt.pieces} kiện · ${kg(inpt.totalActual)} kg${inpt.totalCbm ? ` · ${Number(inpt.totalCbm).toLocaleString("vi-VN", { maximumFractionDigits: 4 })} m³` : ""} · áp giá ngày ${V.viDate(inpt.date)}${ft ? ` · lọc ${ft}` : ""}</span></p>
+  <div class="card scroll"><table class="t"><thead><tr><th>#</th><th>Tuyến</th><th>Dịch vụ</th><th>Nguồn giá</th><th class="num">Cân tính phí</th><th class="num">Đơn giá TB/kg</th><th class="num" style="background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--brand)">Giá bán</th><th class="num">Giá gốc</th><th class="num">Lợi nhuận</th></tr></thead><tbody>
+  ${res.rows.map((x, i) => `<tr ${i === 0 ? 'style="background:color-mix(in srgb,#10b981 10%,transparent)"' : ""}><td class="muted">${i + 1}</td><td><b>${esc(x.routeCode)}</b><div class="text-xs muted">NCC: ${esc(x.supplierCode || "—")}</div></td><td>${badge(x.serviceType, "info")}</td>
+    <td>${SQ.SCOPE_LABEL[x.scope]}${Number(x.adjustPct) ? `<div class="text-xs muted">đã áp ${pctL(x.adjustPct)}</div>` : ""}</td>
+    <td class="num"><b>${kg(x.chargeableWeight)} kg</b>${Number(x.totalVolumetric) ? `<div class="text-xs muted">quy đổi ${kg(x.totalVolumetric)}</div>` : ""}</td>
+    <td class="num">${x.avgUnitPrice ? money(x.avgUnitPrice) : "–"}</td>
+    <td class="num text-base font-semibold" style="background:color-mix(in srgb,var(--accent) 7%,transparent);color:var(--brand)">${money(x.sellAmount)} ${i === 0 ? badge("Rẻ nhất", "ok") : ""}</td>
+    <td class="num">${x.costAmount !== null ? money(x.costAmount) : '<span class="text-xs muted">Chưa có giá gốc</span>'}</td>
+    <td class="num" ${x.profit !== null && Number(x.profit) < 0 ? 'style="color:#dc2626;font-weight:600"' : ""}>${x.profit !== null ? `${money(x.profit)}${x.marginPct !== null ? `<div class="text-xs muted">${Number(x.marginPct).toLocaleString("vi-VN")}%</div>` : ""}` : "–"}</td></tr>`).join("") || `<tr><td colspan="9" class="py-6 text-center muted">Không có tuyến nào${ft ? ` (${ft})` : ""} có giá bán tới ${inpt.iso2} cho khách ${res.c.code}.</td></tr>`}
+  </tbody></table></div>
+  ${miss ? `<details class="mt-2 text-sm"><summary class="cursor-pointer muted">${miss} tuyến không có giá bán phù hợp</summary><ul class="mt-1 list-disc pl-5 text-xs muted">${res.unavailable.map((u) => `<li><b>${esc(u.routeCode)}</b>: ${esc(u.reason)}</li>`).join("")}${res.noSellPrice.length ? `<li>Chưa có bảng giá bán hiệu lực: <b>${res.noSellPrice.map(esc).join(", ")}</b></li>` : ""}</ul></details>` : ""}`}
+  <p class="mt-3 text-xs muted">Thử: đổi khách SKL116 (nhóm Business, có bảng riêng VNFZZXR) ↔ SKL126 (nhóm Cá nhân +15%) để thấy nguồn giá và giá bán đổi theo. Ô nhập dùng chung với trang Tra cứu giá gốc.</p>`;
 }
 
 // =============================================================================

@@ -16,9 +16,11 @@ import {
 } from "@/lib/pricing/quote-input";
 
 type Props = {
-  defaults: { to: string; kg: string; cbm: string; ncc: string; dv: string; date: string };
+  defaults: { to: string; kg: string; cbm: string; ncc: string; dv: string; date: string; kh?: string };
   rows: QuotePackageRow[];
   suppliers: { code: string; name: string }[];
+  /** Có danh sách khách → hiện ô Khách hàng (trang Tra cứu giá bán) */
+  customers?: { code: string; name: string }[];
   autoFocus: boolean;
 };
 
@@ -45,7 +47,7 @@ function totals(rows: QuotePackageRow[]) {
   return { pieces, kg: kgs.length ? sumDecimal(kgs) : "", cbm: cbms.length ? sumDecimal(cbms.map((c) => Number(c).toFixed(6)), 4) : "" };
 }
 
-export function QuoteForm({ defaults, rows: initialRows, suppliers, autoFocus }: Props) {
+export function QuoteForm({ defaults, rows: initialRows, suppliers, customers, autoFocus }: Props) {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<QuotePackageRow[]>(initialRows.length ? initialRows : [emptyPackageRow()]);
   const active = rows.filter(filled);
@@ -64,9 +66,29 @@ export function QuoteForm({ defaults, rows: initialRows, suppliers, autoFocus }:
 
   return (
     <>
-      <form className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[100px_130px_130px_auto_160px_120px_150px_auto]">
+      <form
+        className={
+          customers
+            ? "grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-[220px_100px_120px_120px_auto_150px_110px_150px_auto]"
+            : "grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[100px_130px_130px_auto_160px_120px_150px_auto]"
+        }
+      >
+        {customers && (
+          <Field label="Khách hàng" htmlFor="kh">
+            <NativeSelect id="kh" name="kh" defaultValue={defaults.kh ?? ""} required>
+              <option value="" disabled>
+                Chọn khách hàng…
+              </option>
+              {customers.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code} — {c.name}
+                </option>
+              ))}
+            </NativeSelect>
+          </Field>
+        )}
         <Field label="Điểm đến (ISO2)" htmlFor="to">
-          <Input id="to" name="to" defaultValue={defaults.to} placeholder="US" maxLength={2} required className="uppercase" autoFocus={autoFocus} />
+          <Input id="to" name="to" defaultValue={defaults.to} placeholder="US" maxLength={2} required className="uppercase" autoFocus={autoFocus && !customers} />
         </Field>
         <Field label="Trọng lượng (kg)" htmlFor="kg">
           {multi ? (

@@ -28,6 +28,7 @@ export interface QuoteSearchParams {
   ncc?: string;
   dv?: string;
   date?: string;
+  kh?: string; // mã khách hàng (tra cứu giá bán)
 }
 
 export interface ParsedQuote {

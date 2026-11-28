@@ -76,5 +76,6 @@ export const ROUTE_PERMISSION: Record<string, Permission> = {
   "/bang-ke": "statements.view",
   "/doi-soat": "receipts.view",
   "/bao-gia": "quote.view",
+  "/gia-ban": "quote.view",
   "/nguoi-dung": "users.manage",
 };

@@ -539,6 +539,11 @@ function calcSide(input: OrderPricingInput, catalog: PricingCatalog, date: strin
  * Trường nằm trong `manualOverrides` giữ nguyên giá trị `current`.
  * Lưu ý: kiểm tra price_locked thuộc về tầng service (đơn khóa giá thì không gọi engine).
  */
+/** Tính riêng 1 phía (SELL = giá bán theo route_code, COST = giá gốc theo assigned_route_code) — dùng cho tra cứu báo giá. */
+export function calcPriceSide(input: OrderPricingInput, catalog: PricingCatalog, kind: PriceKind): SideResult {
+  return calcSide(input, catalog, pricingDate(input.shippedAt, input.createdAt), kind);
+}
+
 export function calcOrderPricing(input: OrderPricingInput, catalog: PricingCatalog): OrderPricingResult {
   const date = pricingDate(input.shippedAt, input.createdAt);
   const billed = calcSide(input, catalog, date, "SELL");
