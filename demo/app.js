@@ -3,7 +3,7 @@
 // Module thật của dự án (biên dịch từ lib/*.ts)
 // =============================================================================
 const E = __M.engine, IX = __M.importExcel, V = __M.versioning, IP = __M.importParse, SF = __M.statementFmt, RF = __M.receiptFmt, P = __M.permissions;
-const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary, QI = __M.quoteInput, SQ = __M.sellQuote, OX = __M.orderExport;
+const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary, QI = __M.quoteInput, SQ = __M.sellQuote, OX = __M.orderExport, QR = __M.portalRules;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -363,7 +363,8 @@ S.drafts = S.drafts.filter((d) => {
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ ...S, receipts: S.receipts.map((r) => ({ ...r, proofs: [] })) })); } catch {} };
 save();
 
-const me = () => S.users.find((u) => u.id === S.me);
+// Tài khoản cổng khách / màn đăng nhập cổng: vai trò "PORTAL" không có quyền nội bộ nào
+const me = () => S.users.find((u) => u.id === S.me) || { id: S.me, name: "Khách hàng", role: "PORTAL" };
 const can = (p) => P.can(me().role, p);
 const cust = (c) => custOf(S, c);
 const inScope = (code) => me().role !== "SALE" || cust(code)?.saleId === me().id;
@@ -379,6 +380,7 @@ const VIEWS = {
   "tao-bang-ke": { label: "Tạo bảng kê", perm: "statements.manage", group: "Tài chính" },
   "doi-soat": { label: "Đối soát thu tiền", perm: "receipts.view", group: "Tài chính" },
   "khach-hang": { label: "Khách hàng", perm: "catalog.view", group: "Danh mục" },
+  "cong-khach-hang": { label: "Cổng khách hàng", perm: "portal.viewAs", group: "Danh mục" },
   "nhom-gia": { label: "Nhóm giá", perm: "catalog.view", group: "Danh mục" },
   tuyen: { label: "Tuyến vận chuyển", perm: "catalog.view", group: "Danh mục" },
   "bang-gia": { label: "Kho bảng giá", perm: "pricing.view", group: "Danh mục" },
@@ -422,7 +424,7 @@ function shell(content) {
   const nav = Object.entries(groups)
     .map(([g, items]) => `<p class="mt-4 mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider muted">${g}</p>${items.map(([k, v]) => `<a href="#${k}" class="${k === view ? "on" : ""}">${v.label}</a>`).join("")}`)
     .join("");
-  const roleSel = `<select class="inp" data-c="role" aria-label="Đăng nhập với vai trò">${S.users.map((x) => `<option value="${x.id}" ${x.id === u.id ? "selected" : ""}>${esc(x.name)} — ${P.ROLE_LABEL[x.role]}</option>`).join("")}</select>`;
+  const roleSel = `<select class="inp" data-c="role" aria-label="Đăng nhập với vai trò">${roleOptions()}</select>`;
   return `<div class="flex min-h-screen">
   <aside class="side sticky top-0 h-screen w-60 shrink-0 overflow-y-auto border-r line p-3" style="background:var(--card)">
     <a href="#${home()}" class="mb-2 flex items-center gap-2 px-1"><img src="${LOGO}" alt="SkyLane Logistics" width="38" height="36"><span class="leading-tight"><b class="block text-sm tracking-wide" style="color:var(--brand)">SKYLANE</b><span class="text-[11px] tracking-[.2em] muted">LOGISTICS</span></span></a>
@@ -470,10 +472,11 @@ function current() {
 
 let chartRO = null;
 function render() {
+  if (isPortal()) return renderPortal();
   const v = current();
   syncTabs(v);
   if (chartRO) { chartRO.disconnect(); chartRO = null; }
-  const fn = { dashboard: vDashboard, "don-du-bao": vDrafts, "nhom-gia": vGroups, "don-hang": vOrders, "bao-gia": vQuote, "gia-ban": vSellQuote, "bang-ke": vStatements, "tao-bang-ke": vStatementNew, "doi-soat": vReconcile, "khach-hang": vCustomers, tuyen: vRoutes, "bang-gia": vPricing }[v];
+  const fn = { dashboard: vDashboard, "don-du-bao": vDrafts, "nhom-gia": vGroups, "don-hang": vOrders, "bao-gia": vQuote, "gia-ban": vSellQuote, "bang-ke": vStatements, "tao-bang-ke": vStatementNew, "doi-soat": vReconcile, "khach-hang": vCustomers, "cong-khach-hang": vPortalAdmin, tuyen: vRoutes, "bang-gia": vPricing }[v];
   $("#app").innerHTML = shell(fn());
   if (v === "dashboard") drawChart();
   if (ui.lastView !== v) { window.scrollTo(0, ui.scroll[v] || 0); ui.lastView = v; }
@@ -1053,7 +1056,7 @@ function analyzeImport() {
 // ĐƠN HÀNG DỰ BÁO
 // =============================================================================
 const DRAFT_TABS = [["CHO_XAC_NHAN", "Chờ xác nhận"], ["DA_XAC_NHAN", "Đã xác nhận"], ["DA_LOAI", "Đã loại"]];
-const SRC = { SYNC: ["Google Sheet", "ok"], IMPORT: ["Excel", "info"], MANUAL: ["Nhập tay", "muted"] };
+const SRC = { SYNC: ["Google Sheet", "ok"], IMPORT: ["Excel", "info"], MANUAL: ["Nhập tay", "muted"], PORTAL: ["Cổng KH", "warn"] };
 function vDrafts() {
   const f = ui.drafts, manage = can("drafts.manage"), q = f.q.trim().toLowerCase();
   const scoped = S.drafts.filter((x) => inScope(x.d.customerCode) && (!f.cust || x.d.customerCode === f.cust) && (!q || [x.d.billCode, x.d.customerCode, cust(x.d.customerCode)?.name].some((v) => String(v || "").toLowerCase().includes(q))));
@@ -1134,7 +1137,7 @@ function qpRefreshTotal() {
   if (el) el.innerHTML = `<b>${t.pieces} kiện</b> <span class="muted">· tổng cân thực ${t.kg || 0} kg${t.cbm ? ` · ${t.cbm} m³` : ""}</span>`;
 }
 const qpReopen = (focus) => { qpDialog(); if (focus) $(`[data-qp="${focus}"]`)?.focus(); };
-function quoteFormHtml(withCustomer) {
+function quoteFormHtml(withCustomer, portal = false) {
   const q = ui.quote, multi = q.rows.some(qpFilled), t = qpTotals();
   const sups = [...new Set(S.routes.map((r) => r.supplier).filter(Boolean))].sort();
   const inp = (k, label, ph, extra = "") => `<label class="f"><span>${label}</span><input class="inp" data-q="${k}" value="${esc(q[k])}" placeholder="${ph}" ${extra}></label>`;
@@ -1147,8 +1150,8 @@ function quoteFormHtml(withCustomer) {
     ${multi ? ro("Trọng lượng (kg)", t.kg, "Tổng cân thực các kiện") : inp("kg", "Trọng lượng (kg)", "1,5")}
     ${multi ? ro("Thể tích (CBM)", t.cbm, "Tổng thể tích các kiện có kích thước") : inp("cbm", "Thể tích (CBM)", "m³")}
     <button class="btn o" data-a="qp-open" ${multi ? 'style="border-color:var(--accent);color:var(--accent)"' : ""}>📦 Kích thước thông tin${multi ? ` (${t.pieces} kiện)` : ""}</button>
-    ${sel("ncc", "Nhà cung cấp", sups)}${sel("dv", "Dịch vụ", QI.QUOTE_SERVICE_TYPES)}
-    <label class="f"><span>Ngày áp giá</span><input class="inp" type="date" data-q="date" value="${q.date}"></label>
+    ${portal ? "" : sel("ncc", "Nhà cung cấp", sups)}${sel("dv", "Dịch vụ", QI.QUOTE_SERVICE_TYPES)}
+    ${portal ? "" : `<label class="f"><span>Ngày áp giá</span><input class="inp" type="date" data-q="date" value="${q.date}"></label>`}
     <button class="btn" data-a="quote-run">Tra cứu</button>
   </div>`;
 }
@@ -2020,7 +2023,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("change", (e) => {
   const el = e.target, c = el.dataset.c;
   if (!c) return;
-  if (c === "role") { S.me = el.value; ui.orders.sel.clear(); ui.rc = null; ui.st = ui.stNew = ui.ver = null; save(); if (location.hash.slice(1) !== current()) location.hash = current(); render(); toast(`Đang dùng vai trò ${P.ROLE_LABEL[me().role]} — ${me().name}.`); }
+  if (c === "role") switchRole(el.value);
   else if (c === "nav") location.hash = el.value;
   else if (c === "o-quick") { ui.orders[el.dataset.k] = el.value; ui.orders.page = 1; render(); }
   else if (c.startsWith("dash.")) { ui.dash[c.slice(5)] = el.value; render(); }
@@ -2112,6 +2115,7 @@ document.addEventListener("paste", (e) => {
 addEventListener("scroll", () => { if (ui.lastView) ui.scroll[ui.lastView] = window.scrollY; }, { passive: true });
 document.addEventListener("auxclick", (e) => { const t = e.button === 1 && e.target.closest("[data-tab]"); if (t) { e.preventDefault(); closeTab(t.dataset.tab); } });
 addEventListener("hashchange", () => { ui.ver = null; ui.st = ui.stOpen ?? null; ui.stOpen = null; render(); });
+/*__PORTAL__*/
 render();
 if (fixedSync) { save(); toast(`Đã gỡ ${fixedSync} đơn bị đồng bộ nhầm (lỗi sheet mô phỏng dùng chung). Đồng bộ lại để lấy đơn đúng của từng khách.`, "warn"); }
 }

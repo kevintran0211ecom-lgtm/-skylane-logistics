@@ -6,6 +6,7 @@
 export * as engine from "../lib/pricing/engine";
 export * as importExcel from "../lib/pricing/import-excel";
 export * as versioning from "../lib/pricing/versioning";
+export * as portalRules from "../lib/portal/rules";
 export * as sellQuote from "../lib/pricing/sell-quote";
 export * as quoteInput from "../lib/pricing/quote-input";
 export * as priceTemplate from "../lib/pricing/template";

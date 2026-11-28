@@ -18,7 +18,8 @@ const res = esbuild.buildSync({
 const modules = res.outputFiles[0].text;
 const logo = fs.readFileSync(path.join(__dirname, "../public/logo.png")).toString("base64");
 let html = fs.readFileSync(path.join(__dirname, "template.html"), "utf8");
-const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+const portal = fs.readFileSync(path.join(__dirname, "portal.js"), "utf8");
+const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8").replace("/*__PORTAL__*/", () => portal);
 html = html
   .replace("/*__MODULES__*/", () => modules)
   .replace("/*__APP__*/", () => app)
