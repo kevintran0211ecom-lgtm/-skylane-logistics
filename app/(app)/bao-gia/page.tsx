@@ -1,93 +1,44 @@
 import Link from "next/link";
-import { Search } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Field, Input, NativeSelect } from "@/components/ui/form";
 import { Alert, Badge, Card, PageHeader, Table, TBody, TD, TH, THead, TR } from "@/components/ui/misc";
-import { parseNumberCell } from "@/lib/pricing/import-excel";
-import { quoteCostRoutes, type CostQuoteInput } from "@/lib/pricing/quote-service";
-import { isIsoDate, viDate } from "@/lib/pricing/versioning";
+import { listSuppliers } from "@/lib/catalog/queries";
+import { packageRowsFromParams, parseQuoteInput, type QuoteSearchParams } from "@/lib/pricing/quote-input";
+import { quoteCostRoutes } from "@/lib/pricing/quote-service";
+import { viDate } from "@/lib/pricing/versioning";
 import { formatKg } from "@/lib/labels";
 import { formatMoney } from "@/lib/utils";
 import { requirePage } from "@/lib/auth/session";
+import { QuoteForm } from "./quote-form";
 
 export const metadata = { title: "Tra cứu báo giá tuyến gốc — SkyLane" };
 
-type SP = { to?: string; kg?: string; vol?: string; l?: string; w?: string; h?: string; cbm?: string; date?: string };
-
 const todaySaigon = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Saigon" }).format(new Date());
-const num = (s: string | undefined) => (s?.trim() ? parseNumberCell(s.trim(), "weight") : null);
 
-function readInput(sp: SP): { input?: CostQuoteInput; error?: string } {
-  if (!sp.to && !sp.kg) return {};
-  const iso2 = (sp.to ?? "").trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(iso2)) return { error: "Điểm đến phải là mã quốc gia ISO2 (VD: US, GB, AU)." };
-  const weight = num(sp.kg);
-  if (!weight || weight === "0") return { error: "Nhập trọng lượng lớn hơn 0 kg." };
-  const date = sp.date?.trim() || todaySaigon();
-  if (!isIsoDate(date)) return { error: "Ngày áp giá không hợp lệ." };
-
-  let volume: CostQuoteInput["volume"] = { type: "NONE" };
-  if (sp.vol === "DIM" && (sp.l || sp.w || sp.h)) {
-    const [l, w, h] = [num(sp.l), num(sp.w), num(sp.h)];
-    if (!l || !w || !h) return { error: "Nhập đủ Dài, Rộng, Cao (cm) hợp lệ." };
-    volume = { type: "DIM", l, w, h };
-  } else if (sp.vol === "CBM" && sp.cbm) {
-    const cbm = parseNumberCell(sp.cbm.trim(), "price");
-    if (!cbm || cbm === "0") return { error: "Thể tích (CBM) không hợp lệ." };
-    volume = { type: "CBM", cbm };
-  }
-  return { input: { iso2, weight, volume, date } };
-}
-
-export default async function CostQuotePage({ searchParams }: { searchParams: Promise<SP> }) {
+export default async function CostQuotePage({ searchParams }: { searchParams: Promise<QuoteSearchParams> }) {
   await requirePage("quote.view");
   const sp = await searchParams;
-  const { input, error } = readInput(sp);
-  const result = input ? await quoteCostRoutes(input) : null;
-  const vol = sp.vol === "CBM" ? "CBM" : "DIM";
+  const { input, error } = parseQuoteInput(sp, todaySaigon());
+  const [result, suppliers] = await Promise.all([
+    input
+      ? quoteCostRoutes({ iso2: input.iso2, packages: input.packages, date: input.date, supplierCode: input.supplierCode, serviceType: input.serviceType })
+      : null,
+    listSuppliers(),
+  ]);
   const cheapest = result?.rows.find((r) => r.currency === "VND")?.amount;
+  const filterText = [input?.supplierCode && `NCC ${input.supplierCode}`, input?.serviceType && `dịch vụ ${input.serviceType}`].filter(Boolean).join(", ");
 
   return (
     <>
       <PageHeader title="Tra cứu báo giá tuyến gốc" description="So sánh giá gốc nhà cung cấp của mọi tuyến theo điểm đến, trọng lượng và kích thước." />
 
       <Card className="mb-5 p-4">
-        <form className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[110px_120px_140px_1fr_150px_auto]">
-          <Field label="Điểm đến (ISO2)" htmlFor="to">
-            <Input id="to" name="to" defaultValue={sp.to ?? ""} placeholder="US" maxLength={2} required className="uppercase" autoFocus={!input} />
-          </Field>
-          <Field label="Trọng lượng (kg)" htmlFor="kg">
-            <Input id="kg" name="kg" defaultValue={sp.kg ?? ""} inputMode="decimal" placeholder="1,5" required />
-          </Field>
-          <Field label="Thể tích theo" htmlFor="vol">
-            <NativeSelect id="vol" name="vol" defaultValue={vol}>
-              <option value="DIM">Kích thước (cm)</option>
-              <option value="CBM">Thể tích (CBM)</option>
-            </NativeSelect>
-          </Field>
-          <div className="grid grid-cols-4 gap-2">
-            <Field label="Dài" htmlFor="l">
-              <Input id="l" name="l" defaultValue={sp.l ?? ""} inputMode="decimal" placeholder="cm" />
-            </Field>
-            <Field label="Rộng" htmlFor="w">
-              <Input id="w" name="w" defaultValue={sp.w ?? ""} inputMode="decimal" placeholder="cm" />
-            </Field>
-            <Field label="Cao" htmlFor="h">
-              <Input id="h" name="h" defaultValue={sp.h ?? ""} inputMode="decimal" placeholder="cm" />
-            </Field>
-            <Field label="CBM" htmlFor="cbm">
-              <Input id="cbm" name="cbm" defaultValue={sp.cbm ?? ""} inputMode="decimal" placeholder="m³" />
-            </Field>
-          </div>
-          <Field label="Ngày áp giá" htmlFor="date">
-            <Input id="date" name="date" type="date" defaultValue={sp.date || todaySaigon()} />
-          </Field>
-          <Button type="submit">
-            <Search /> Tra cứu
-          </Button>
-        </form>
+        <QuoteForm
+          defaults={{ to: sp.to ?? "", kg: sp.kg ?? "", cbm: sp.cbm ?? "", ncc: (sp.ncc ?? "").toUpperCase(), dv: (sp.dv ?? "").toUpperCase(), date: sp.date || todaySaigon() }}
+          rows={packageRowsFromParams(sp.p)}
+          suppliers={suppliers}
+          autoFocus={!input}
+        />
         <p className="mt-2 text-xs text-muted-foreground">
-          Để trống kích thước nếu chỉ tính theo cân thực. Chọn “Thể tích theo” để dùng Dài/Rộng/Cao hoặc CBM. Mỗi tuyến tự áp DIM, cách tính cân và quy tắc làm tròn riêng.
+          Hàng nhiều kiện: bấm “Kích thước thông tin” để nhập từng nhóm kiện (số kiện, cân/kiện, Dài × Rộng × Cao) — Trọng lượng và CBM tự cộng. Hàng 1 kiện chỉ cần nhập Trọng lượng (và CBM nếu có). Mỗi tuyến tự áp DIM, cách tính cân và quy tắc làm tròn riêng.
         </p>
       </Card>
 
@@ -98,15 +49,15 @@ export default async function CostQuotePage({ searchParams }: { searchParams: Pr
           <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
             <span className="font-medium">{result.rows.length} tuyến phù hợp</span>
             <span className="text-muted-foreground">
-              → {input.iso2} · {formatKg(input.weight)} kg
-              {input.volume.type === "DIM" && ` · ${input.volume.l}×${input.volume.w}×${input.volume.h} cm`}
-              {input.volume.type === "CBM" && ` · ${input.volume.cbm} m³`} · áp giá ngày {viDate(input.date)}
+              → {input.iso2} · {input.pieces} kiện · {formatKg(input.totalActual)} kg
+              {input.totalCbm && ` · ${Number(input.totalCbm).toLocaleString("vi-VN", { maximumFractionDigits: 4 })} m³`} · áp giá ngày {viDate(input.date)}
+              {filterText && ` · lọc ${filterText}`}
             </span>
           </div>
 
           {result.rows.length === 0 ? (
             <Alert tone="warning">
-              Không có tuyến nào có bảng giá gốc tới {input.iso2} hiệu lực ngày {viDate(input.date)}.{" "}
+              Không có tuyến nào{filterText && ` (${filterText})`} có bảng giá gốc tới {input.iso2} hiệu lực ngày {viDate(input.date)}.{" "}
               <Link href="/bang-gia/import" className="underline">
                 Nhập bảng giá
               </Link>

@@ -3,7 +3,7 @@
 // Module thật của dự án (biên dịch từ lib/*.ts)
 // =============================================================================
 const E = __M.engine, IX = __M.importExcel, V = __M.versioning, IP = __M.importParse, SF = __M.statementFmt, RF = __M.receiptFmt, P = __M.permissions;
-const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary;
+const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary, QI = __M.quoteInput;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -390,7 +390,7 @@ const ui = {
   dash: { from: "2026-11-01", to: today() < "2026-11-01" ? "2026-11-30" : today(), cust: "", sale: "", table: false },
   orders: { q: "", status: "", cust: "", asg: "", iso2: "", page: 1, sel: new Set(), df: "sent", from: "", to: "", sort: "", dir: "asc" },
   drafts: { status: "CHO_XAC_NHAN", q: "", cust: "", sel: new Set() },
-  quote: { to: "US", kg: "1,5", vol: "DIM", l: "30", w: "20", h: "15", cbm: "", date: today(), ran: true },
+  quote: { to: "US", kg: "1,5", cbm: "", ncc: "", dv: "", date: today(), rows: [{ qty: "2", kg: "1,5", l: "30", w: "20", h: "15" }], ran: true },
   ver: null, verKind: "", verRoute: "", st: null, stNew: null, rc: null, stq: { q: "", sort: "", dir: "asc" },
 };
 
@@ -407,6 +407,8 @@ function openDialog(title, body, wide = false) {
   if (!dlg.open) dlg.showModal();
 }
 const closeDialog = () => dlg.open && dlg.close();
+// Đóng cửa sổ Kích thước thông tin (Xong / ✕ / Esc) → vẽ lại tổng cân & số kiện trên form
+dlg.addEventListener("close", () => { if (ui.qpOpen) { ui.qpOpen = false; render(); } });
 
 // =============================================================================
 // Khung trang
@@ -1000,51 +1002,89 @@ function vDrafts() {
 // =============================================================================
 // TRA CỨU GIÁ GỐC
 // =============================================================================
+const qpFilled = (r) => !!(r.kg.trim() || r.l.trim() || r.w.trim() || r.h.trim());
 function runQuote() {
-  const q = ui.quote, iso2 = q.to.trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(iso2)) return { error: "Điểm đến phải là mã ISO2 (VD: US, GB)." };
-  const w = IX.parseNumberCell(q.kg, "weight");
-  if (!w || w === "0") return { error: "Nhập trọng lượng lớn hơn 0." };
-  const pkg = { actualWeight: w };
-  if (q.vol === "DIM" && (q.l || q.w || q.h)) Object.assign(pkg, { lengthCm: IX.parseNumberCell(q.l, "weight") || "0", widthCm: IX.parseNumberCell(q.w, "weight") || "0", heightCm: IX.parseNumberCell(q.h, "weight") || "0" });
-  if (q.vol === "CBM" && q.cbm) pkg.volumeCbm = IX.parseNumberCell(q.cbm, "price") || "0";
+  const q = ui.quote;
+  const { input, error } = QI.parseQuoteInput({ to: q.to, kg: q.kg, cbm: q.cbm, ncc: q.ncc, dv: q.dv, date: q.date, p: q.rows.filter(qpFilled).map(QI.encodePackageRow) }, today());
+  if (error || !input) return { error: error || "Nhập điểm đến và trọng lượng." };
   const rows = [], na = [];
   for (const r of S.routes) {
-    const sel = E.selectVersion(S.versions, { routeCode: r.code, kind: "COST", date: q.date });
-    if (!sel || !sel.version.zones.some((z) => z.countries.includes(iso2))) continue;
+    if (input.supplierCode && (r.supplier || "").toUpperCase() !== input.supplierCode) continue;
+    if (input.serviceType && r.service !== input.serviceType) continue;
+    const sel = E.selectVersion(S.versions, { routeCode: r.code, kind: "COST", date: input.date });
+    if (!sel || !sel.version.zones.some((z) => z.countries.includes(input.iso2))) continue;
     const route = { routeCode: r.code, serviceType: r.service, weightCalcMode: r.mode, dimDivisor: r.dim };
     try {
-      const bill = E.calcBillWeight([pkg], route);
-      const qv = E.quoteVersion(sel.version, iso2, bill.totalWeight);
-      rows.push({ r, bill, qv, v: sel.version });
+      const bill = E.calcBillWeight(input.packages, route);
+      const qv = E.quoteVersion(sel.version, input.iso2, bill.totalWeight);
+      rows.push({ r, bill, qv, v: sel.version, vol: QI.sumDecimal(bill.packages.map((p) => p.volumetricWeight)) });
     } catch (e) { na.push([r.code, e.message]); }
   }
   rows.sort((a, b) => Number(a.qv.amount) - Number(b.qv.amount));
-  return { rows, na, iso2, w };
+  return { rows, na, input };
 }
+// Tổng tạm tính trong cửa sổ Kích thước thông tin
+function qpTotals() {
+  let pieces = 0, kgSum = 0, cbm = 0;
+  for (const r of ui.quote.rows.filter(qpFilled)) {
+    const n = r.qty.trim() === "" ? 1 : Number(r.qty);
+    if (!Number.isInteger(n) || n < 1) continue;
+    pieces += n;
+    kgSum += Number(IX.parseNumberCell(r.kg, "weight") || 0) * n;
+    const d = [r.l, r.w, r.h].map((x) => Number(IX.parseNumberCell(x, "weight") || 0));
+    if (d.every((x) => x > 0)) cbm += (d[0] * d[1] * d[2] * n) / 1e6;
+  }
+  const f = (v, dec) => (v ? Number(v.toFixed(dec)).toLocaleString("vi-VN", { maximumFractionDigits: dec }) : "");
+  return { pieces, kg: f(kgSum, 3), cbm: f(cbm, 4) };
+}
+const QP_COLS = [["qty", "Số kiện"], ["kg", "Cân/kiện (kg)"], ["l", "Dài (cm)"], ["w", "Rộng (cm)"], ["h", "Cao (cm)"]];
+function qpDialog() {
+  const rows = ui.quote.rows.length ? ui.quote.rows : (ui.quote.rows = [QI.emptyPackageRow()]);
+  const t = qpTotals();
+  ui.qpOpen = true;
+  openDialog("Kích thước thông tin", `<p class="mb-3 text-xs muted">Mỗi dòng là một nhóm kiện giống nhau. Có thể dán nhiều dòng từ Excel (Số kiện · Cân · Dài · Rộng · Cao). Enter ở dòng cuối để thêm dòng.</p>
+  <div class="scroll"><table class="t"><thead><tr><th style="width:44px">STT</th><th style="width:44px;text-align:center"><button class="btn sm" style="padding:0 7px;background:#059669" data-a="qp-add" aria-label="Thêm dòng">+</button></th>${QP_COLS.map(([, l]) => `<th>${l}</th>`).join("")}</tr></thead><tbody>
+  ${rows.map((r, i) => `<tr><td class="muted">${i + 1}</td><td style="text-align:center"><button class="btn sm" style="padding:0 8px;background:#ef4444" data-a="qp-del" data-i="${i}" aria-label="Xóa dòng ${i + 1}">−</button></td>${QP_COLS.map(([k, l]) => `<td><input class="inp" style="min-width:70px" data-qp="${i}:${k}" value="${esc(r[k])}" inputmode="decimal" aria-label="Dòng ${i + 1} ${l}"></td>`).join("")}</tr>`).join("")}
+  </tbody></table></div>
+  <div class="mt-4 flex flex-wrap items-center justify-between gap-3"><p class="text-sm" id="qp-total"><b>${t.pieces} kiện</b> <span class="muted">· tổng cân thực ${t.kg || 0} kg${t.cbm ? ` · ${t.cbm} m³` : ""}</span></p>
+  <span class="flex gap-2"><button class="btn o" data-a="qp-clear">Xóa hết</button><button class="btn" data-a="qp-done">Xong</button></span></div>`);
+}
+function qpRefreshTotal() {
+  const t = qpTotals(), el = $("#qp-total");
+  if (el) el.innerHTML = `<b>${t.pieces} kiện</b> <span class="muted">· tổng cân thực ${t.kg || 0} kg${t.cbm ? ` · ${t.cbm} m³` : ""}</span>`;
+}
+const qpReopen = (focus) => { qpDialog(); if (focus) $(`[data-qp="${focus}"]`)?.focus(); };
 function vQuote() {
   const q = ui.quote, res = q.ran ? runQuote() : null;
+  const multi = q.rows.some(qpFilled), t = qpTotals();
+  const sups = [...new Set(S.routes.map((r) => r.supplier).filter(Boolean))].sort();
   const inp = (k, label, ph, extra = "") => `<label class="f"><span>${label}</span><input class="inp" data-q="${k}" value="${esc(q[k])}" placeholder="${ph}" ${extra}></label>`;
+  const ro = (label, v, title) => `<label class="f"><span>${label}</span><input class="inp" value="${esc(v)}" readonly style="background:var(--soft)" title="${title}"></label>`;
+  const sel = (k, label, opts) => `<label class="f"><span>${label}</span><select class="inp" data-q="${k}"><option value="">Tất cả</option>${opts.map((o) => `<option ${o === q[k] ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`;
+  const inpt = res && !res.error ? res.input : null;
+  const ft = inpt ? [inpt.supplierCode && `NCC ${inpt.supplierCode}`, inpt.serviceType && `dịch vụ ${inpt.serviceType}`].filter(Boolean).join(", ") : "";
   return head("Tra cứu báo giá tuyến gốc", "So sánh giá gốc NCC của mọi tuyến; mỗi tuyến tự áp DIM, cách tính cân và quy tắc làm tròn riêng.") + `
-  <div class="card mb-4 grid items-end gap-3 p-4 sm:grid-cols-3 lg:grid-cols-[100px_120px_150px_1fr_160px_auto]">
-    ${inp("to", "Điểm đến (ISO2)", "US", 'maxlength="2"')}${inp("kg", "Trọng lượng (kg)", "1,5")}
-    <label class="f"><span>Thể tích theo</span><select class="inp" data-q="vol"><option value="DIM" ${q.vol === "DIM" ? "selected" : ""}>Kích thước (cm)</option><option value="CBM" ${q.vol === "CBM" ? "selected" : ""}>Thể tích (CBM)</option></select></label>
-    <div class="grid grid-cols-4 gap-2">${inp("l", "Dài", "cm")}${inp("w", "Rộng", "cm")}${inp("h", "Cao", "cm")}${inp("cbm", "CBM", "m³")}</div>
+  <div class="card mb-4 grid items-end gap-3 p-4 sm:grid-cols-3 lg:grid-cols-[100px_130px_130px_auto_150px_110px_150px_auto]">
+    ${inp("to", "Điểm đến (ISO2)", "US", 'maxlength="2"')}
+    ${multi ? ro("Trọng lượng (kg)", t.kg, "Tổng cân thực các kiện") : inp("kg", "Trọng lượng (kg)", "1,5")}
+    ${multi ? ro("Thể tích (CBM)", t.cbm, "Tổng thể tích các kiện có kích thước") : inp("cbm", "Thể tích (CBM)", "m³")}
+    <button class="btn o" data-a="qp-open" ${multi ? 'style="border-color:var(--accent);color:var(--accent)"' : ""}>📦 Kích thước thông tin${multi ? ` (${t.pieces} kiện)` : ""}</button>
+    ${sel("ncc", "Nhà cung cấp", sups)}${sel("dv", "Dịch vụ", QI.QUOTE_SERVICE_TYPES)}
     <label class="f"><span>Ngày áp giá</span><input class="inp" type="date" data-q="date" value="${q.date}"></label>
     <button class="btn" data-a="quote-run">Tra cứu</button>
   </div>
   ${!res ? "" : res.error ? `<div class="card p-3" style="color:#dc2626">${esc(res.error)}</div>` : `
-  <p class="mb-2 text-sm"><b>${res.rows.length} tuyến phù hợp</b> <span class="muted">→ ${res.iso2} · ${kg(res.w)} kg · áp giá ngày ${V.viDate(q.date)}</span></p>
+  <p class="mb-2 text-sm"><b>${res.rows.length} tuyến phù hợp</b> <span class="muted">→ ${inpt.iso2} · ${inpt.pieces} kiện · ${kg(inpt.totalActual)} kg${inpt.totalCbm ? ` · ${Number(inpt.totalCbm).toLocaleString("vi-VN", { maximumFractionDigits: 4 })} m³` : ""} · áp giá ngày ${V.viDate(inpt.date)}${ft ? ` · lọc ${ft}` : ""}</span></p>
   <div class="card scroll"><table class="t"><thead><tr><th>#</th><th>Tuyến</th><th>Dịch vụ</th><th class="num">Cân tính phí</th><th class="num">Đơn giá/kg</th><th class="num" style="background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--brand)">Tổng tiền (VND)</th><th class="num">DIM</th><th>Hiệu lực bảng giá</th></tr></thead><tbody>
   ${res.rows.map((x, i) => `<tr ${i === 0 ? 'style="background:color-mix(in srgb,#10b981 10%,transparent)"' : ""}><td class="muted">${i + 1}</td><td><b>${esc(x.r.code)}</b><div class="text-xs muted">NCC: ${esc(x.r.supplier)}</div></td><td>${badge(x.r.service, "info")}</td>
-    <td class="num"><b>${kg(x.bill.totalWeight)} kg</b>${x.r.mode === "MAX_ACTUAL_VOL" && Number(x.bill.packages[0].volumetricWeight) ? `<div class="text-xs muted">quy đổi ${kg(x.bill.packages[0].volumetricWeight)}</div>` : ""}</td>
+    <td class="num"><b>${kg(x.bill.totalWeight)} kg</b>${x.r.mode === "MAX_ACTUAL_VOL" && Number(x.vol) ? `<div class="text-xs muted">quy đổi ${kg(x.vol)}</div>` : ""}</td>
     <td class="num">${x.qv.unitPrice ? money(x.qv.unitPrice) : '<span class="text-xs muted">Trọn mốc</span>'}</td>
     <td class="num text-base font-semibold" style="background:color-mix(in srgb,var(--accent) 7%,transparent);color:var(--brand)">${money(x.qv.amount)} ${i === 0 ? badge("Rẻ nhất", "ok") : ""}</td>
     <td class="num">${x.r.mode === "ACTUAL_ONLY" ? badge("Cân thực", "warn") : Number(x.r.dim).toLocaleString("vi-VN")}</td>
-    <td class="num">${V.viDate(x.v.effectiveFrom)} → ${V.viDate(x.v.effectiveTo)}</td></tr>`).join("") || `<tr><td colspan="8" class="py-6 text-center muted">Không có tuyến nào có bảng giá gốc tới ${res.iso2}.</td></tr>`}
+    <td class="num">${V.viDate(x.v.effectiveFrom)} → ${V.viDate(x.v.effectiveTo)}</td></tr>`).join("") || `<tr><td colspan="8" class="py-6 text-center muted">Không có tuyến nào${ft ? ` (${ft})` : ""} có bảng giá gốc tới ${inpt.iso2}.</td></tr>`}
   </tbody></table></div>
   ${res.na.length ? `<details class="mt-2 text-sm"><summary class="cursor-pointer muted">${res.na.length} tuyến không phục vụ mức cân này</summary><ul class="mt-1 list-disc pl-5 text-xs muted">${res.na.map(([c, m]) => `<li><b>${esc(c)}</b>: ${esc(m)}</li>`).join("")}</ul></details>` : ""}`}
-  <p class="mt-3 text-xs muted">Thử: đổi kích thước để thấy tuyến DIM thấp bị đẩy cân; đổi ngày áp giá về 15/10/2026 để thấy VNFZZXR dùng bảng giá tháng 10.</p>`;
+  <p class="mt-3 text-xs muted">Thử: bấm “Kích thước thông tin” để thêm/bớt kiện; lọc theo NCC hoặc dịch vụ; đổi ngày áp giá về 15/10/2026 để thấy VNFZZXR dùng bảng giá tháng 10.</p>`;
 }
 
 // =============================================================================
@@ -1575,6 +1615,11 @@ const A = {
     toast(`Đã đưa ${a.valid.length} đơn vào Đơn hàng dự báo, chặn ${a.dupDb.length + a.res.duplicatesInFile.length} đơn trùng, bỏ qua ${a.errors.length} dòng lỗi.`);
   },
   "quote-run": () => { $$("[data-q]").forEach((i) => (ui.quote[i.dataset.q] = i.value)); ui.quote.ran = true; render(); },
+  "qp-open": () => { $$("[data-q]").forEach((i) => (ui.quote[i.dataset.q] = i.value)); qpDialog(); },
+  "qp-add": () => { ui.quote.rows.push(QI.emptyPackageRow()); qpReopen(`${ui.quote.rows.length - 1}:qty`); },
+  "qp-del": (el) => { const i = Number(el.dataset.i); ui.quote.rows.splice(i, 1); if (!ui.quote.rows.length) ui.quote.rows.push(QI.emptyPackageRow()); qpDialog(); },
+  "qp-clear": () => { ui.quote.rows = [QI.emptyPackageRow()]; qpDialog(); },
+  "qp-done": () => closeDialog(),
   "ver-open": (el, e) => { e.preventDefault(); ui.ver = Number(el.dataset.id); render(); },
   "ver-back": () => { ui.ver = null; render(); },
   "ver-toggle": (el) => {
@@ -1854,6 +1899,7 @@ document.addEventListener("input", (e) => {
   const el = e.target, c = el.dataset.c;
   const row = el.closest('[data-c="bulk-row"]');
   if (row && el.type !== "checkbox") $("input[type=checkbox]", row).checked = true;
+  if (el.dataset.qp) { const [i, k] = el.dataset.qp.split(":"); ui.quote.rows[Number(i)][k] = el.value; qpRefreshTotal(); }
   if (c === "imp-text") ui.impRows = null;
   if (e.target.id === "pi-text") { ui.piSheets = null; const s = $("#pi-src"); if (s) s.textContent = "Nguồn: dữ liệu dán."; }
   if (c === "fmt") el.value = RF.formatThousands(el.value);
@@ -1873,6 +1919,25 @@ document.addEventListener("input", (e) => {
     rcRefresh();
   }
   if (c === "rc-alloc") { const f = RF.formatThousands(el.value); el.value = f; ui.rc.alloc[el.dataset.id] = f; ui.rc.manual = true; rcRefresh(); }
+});
+// Kích thước thông tin: dán nhiều dòng từ Excel; Enter ở dòng cuối thêm dòng
+document.addEventListener("paste", (e) => {
+  const el = e.target.closest?.("[data-qp]");
+  if (!el) return;
+  const text = e.clipboardData.getData("text");
+  if (!/[\t\n]/.test(text.trim())) return;
+  e.preventDefault();
+  const i = Number(el.dataset.qp.split(":")[0]), rows = ui.quote.rows;
+  rows.splice(i, 1, ...QI.parsePastedRows(text));
+  qpDialog();
+});
+document.addEventListener("keydown", (e) => {
+  const el = e.target.closest?.("[data-qp]");
+  if (!el || e.key !== "Enter") return;
+  e.preventDefault();
+  const i = Number(el.dataset.qp.split(":")[0]);
+  if (i === ui.quote.rows.length - 1) { ui.quote.rows.push(QI.emptyPackageRow()); qpReopen(`${i + 1}:qty`); }
+  else $(`[data-qp="${i + 1}:${el.dataset.qp.split(":")[1]}"]`)?.focus();
 });
 // Chuột phải trên 1 dòng vận đơn → menu Sao chép
 document.addEventListener("contextmenu", (e) => {

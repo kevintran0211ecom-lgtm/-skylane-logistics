@@ -8,13 +8,15 @@ import {
   pricingZoneCountries,
   routes,
 } from "@/drizzle/schema";
+import { sumDecimal } from "./quote-input";
 import { calcBillWeight, PricingError, quoteVersion, type PackageInput, type PriceVersion, type RouteConfig } from "./engine";
 
 export interface CostQuoteInput {
   iso2: string;
-  weight: string; // kg
-  volume: { type: "NONE" } | { type: "DIM"; l: string; w: string; h: string } | { type: "CBM"; cbm: string };
+  packages: PackageInput[]; // mỗi phần tử = 1 kiện (đã nhân theo số kiện)
   date: string; // YYYY-MM-DD — ngày áp giá
+  supplierCode?: string | null; // lọc theo nhà cung cấp
+  serviceType?: RouteConfig["serviceType"] | null; // lọc theo loại dịch vụ
 }
 
 export interface CostQuoteRow {
@@ -41,7 +43,7 @@ export interface CostQuoteResult {
 }
 
 /**
- * Báo giá gốc mọi tuyến đang hoạt động có bảng giá COST (chung) hiệu lực tại ngày áp giá
+ * Báo giá gốc mọi tuyến đang hoạt động (lọc theo NCC / dịch vụ nếu chọn) có bảng giá COST (chung) hiệu lực tại ngày áp giá
  * và có vùng giá cho nước đến. Tính cân & giá hoàn toàn qua engine.
  */
 export async function quoteCostRoutes(input: CostQuoteInput): Promise<CostQuoteResult> {
@@ -69,6 +71,8 @@ export async function quoteCostRoutes(input: CostQuoteInput): Promise<CostQuoteR
     .where(
       and(
         eq(routes.isActive, true),
+        input.supplierCode ? eq(routes.supplierCode, input.supplierCode) : undefined,
+        input.serviceType ? eq(routes.serviceType, input.serviceType) : undefined,
         eq(pricingVersions.priceKind, "COST"),
         eq(pricingVersions.status, "ACTIVE"),
         isNull(pricingVersions.customerCode),
@@ -95,12 +99,6 @@ export async function quoteCostRoutes(input: CostQuoteInput): Promise<CostQuoteR
       .from(pricingPerKgTiers)
       .where(inArray(pricingPerKgTiers.zoneId, zoneIds)),
   ]);
-
-  const pkg: PackageInput = {
-    actualWeight: input.weight,
-    ...(input.volume.type === "DIM" && { lengthCm: input.volume.l, widthCm: input.volume.w, heightCm: input.volume.h }),
-    ...(input.volume.type === "CBM" && { volumeCbm: input.volume.cbm }),
-  };
 
   const rows: CostQuoteRow[] = [];
   const unavailable: CostQuoteResult["unavailable"] = [];
@@ -130,7 +128,7 @@ export async function quoteCostRoutes(input: CostQuoteInput): Promise<CostQuoteR
       ],
     };
     try {
-      const bill = calcBillWeight([pkg], route);
+      const bill = calcBillWeight(input.packages, route);
       const q = quoteVersion(version, input.iso2, bill.totalWeight);
       rows.push({
         routeCode: v.routeCode,
@@ -139,7 +137,7 @@ export async function quoteCostRoutes(input: CostQuoteInput): Promise<CostQuoteR
         serviceType: v.serviceType,
         weightCalcMode: v.weightCalcMode,
         dimDivisor: v.dimDivisor,
-        volumetricWeight: bill.packages[0].volumetricWeight,
+        volumetricWeight: sumDecimal(bill.packages.map((p) => p.volumetricWeight)),
         chargeableWeight: bill.totalWeight,
         amount: q.amount,
         currency,
