@@ -3,7 +3,7 @@
 // Module thật của dự án (biên dịch từ lib/*.ts)
 // =============================================================================
 const E = __M.engine, IX = __M.importExcel, V = __M.versioning, IP = __M.importParse, SF = __M.statementFmt, RF = __M.receiptFmt, P = __M.permissions;
-const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary, QI = __M.quoteInput, SQ = __M.sellQuote;
+const SL = __M.search, TT = __M.totals, ED = __M.edit, XL = __M.excelLayout, PT = __M.priceTemplate, OT = __M.orderTemplate, GT = __M.groupTable, RS = __M.repriceSummary, QI = __M.quoteInput, SQ = __M.sellQuote, OX = __M.orderExport;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -633,7 +633,7 @@ function vOrders() {
   const asgOpts = [...new Set([...S.routes.map((r) => r.code), ...scoped.map((o) => o.assigned || o.route)])].sort().map((r) => [r, r]);
   const isoOpts = [...new Set(scoped.map((o) => o.iso2).filter(Boolean))].sort().map((c) => [c, c]);
   return head("Quản lý vận đơn", "Bấm vào mã vận đơn để xem & sửa đầy đủ. Đơn chưa khóa giá tự tính lại giá gốc, giá bán, lợi nhuận khi đổi kích thước, cân hoặc tuyến.",
-    `<button class="btn o" data-a="copy-menu">Sao chép ▾</button>${bulk ? `<button class="btn o" data-a="bulk-open" ${f.sel.size ? "" : "disabled"}>Sửa đổi hàng loạt${f.sel.size ? ` (${f.sel.size})` : ""}</button>` : ""}${can("drafts.view") ? `<a class="btn o" href="#don-du-bao">Nhận đơn mới${pendingDrafts() ? ` <span class="b b-info">${pendingDrafts()}</span>` : ""}</a>` : ""}`) + `
+    `<button class="btn o" data-a="copy-menu">Sao chép ▾</button><button class="btn o" data-a="exp-open" title="Tải file Excel, tự chọn cột">⬇ Tải xuống</button>${bulk ? `<button class="btn o" data-a="bulk-open" ${f.sel.size ? "" : "disabled"}>Sửa đổi hàng loạt${f.sel.size ? ` (${f.sel.size})` : ""}</button>` : ""}${can("drafts.view") ? `<a class="btn o" href="#don-du-bao">Nhận đơn mới${pendingDrafts() ? ` <span class="b b-info">${pendingDrafts()}</span>` : ""}</a>` : ""}`) + `
   <div class="mb-3 flex flex-wrap border-b line">${tabs}</div>
   <div class="mb-2 flex flex-wrap items-end gap-2" id="o-quick"><span class="pb-2 text-xs font-medium muted">Lọc nhanh:</span>
     ${qsel("cust", "Mã KH — Tên khách hàng", custOpts, 230)}${qsel("asg", "Tuyến chỉ định", asgOpts, 180)}${qsel("iso2", "Điểm đến", isoOpts, 110)}${qsel("status", "Trạng thái", STATUSES.map((x) => [x, x]), 160)}
@@ -663,6 +663,85 @@ function vOrders() {
   <div class="card mt-2 grid gap-1 p-3 text-xs muted" style="background:var(--soft)">${picked.length ? totalsLine("Đã chọn", totalsOf(picked)) : ""}${totalsLine(filtered ? "Tổng theo bộ lọc" : "Tổng tất cả", totalsOf(rows), true)}</div>
   <div class="mt-3 flex items-center justify-between text-sm muted"><span>${rows.length} đơn · ⚠ = chưa tra được giá · * = ghi đè thủ công</span><span class="flex items-center gap-2"><button class="btn o sm" data-a="o-page" data-v="${f.page - 1}" ${f.page <= 1 ? "disabled" : ""}>‹</button>Trang ${f.page}/${pages}<button class="btn o sm" data-a="o-page" data-v="${f.page + 1}" ${f.page >= pages ? "disabled" : ""}>›</button></span></div>`;
 }
+
+// =============================================================================
+// TẢI XUỐNG VẬN ĐƠN THEO CỘT (cùng module lib/orders/export-columns với web thật)
+// =============================================================================
+const expStore = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const expCols = () => OX.exportColumnsFor(can("orders.viewMoney"));
+const toExportOrder = (o) => {
+  const c = cust(o.customer), r = S.routes.find((x) => x.code === (o.assigned || o.route));
+  const n = (v) => (v === undefined || v === null || v === "" ? "0" : String(v));
+  const dim = (v) => String(Number(IX.parseNumberCell(String(v ?? ""), "weight") || 0));
+  return {
+    billCode: o.bill, trackingNumber: o.tracking || null, customerCode: o.customer, customerName: c?.name || "", routeCode: o.route, assignedRouteCode: o.assigned || o.route,
+    supplierCode: r?.supplier || null, serviceType: r?.service || null, destinationIso2: o.iso2, status: o.status, debtStatus: o.debt, pricingDate: pd(o),
+    createdAt: o.createdAt || null, receivedAt: null, exportedAt: o.exportedAt || null, deliveredAt: null, packageCount: o.packages.length,
+    dimensions: o.packages.filter((p) => Number(dim(p.l)) || Number(dim(p.w)) || Number(dim(p.h))).map((p) => `${dim(p.l)}x${dim(p.w)}x${dim(p.h)}`).join("; "),
+    actualWeight: n(o.actual), volumetricWeight: n(o.vol), billedWeight: n(o.billed), shippedWeight: n(o.shipped), sellAmount: n(o.sell), surchargeAmount: "0", totalAmount: n(o.sell),
+    costAmount: n(o.cost), profit: String(Number(o.sell || 0) - Number(o.cost || 0)), priceLocked: !!o.locked, senderName: null, receiverName: o.receiver || null,
+    receiverPhone: o.rPhone || null, receiverEmail: o.rEmail || null, receiverAddress: o.rAddress || null, receiverCity: o.rCity || null, receiverState: o.rState || null,
+    receiverPostalCode: o.rPostal || null, goodsDescription: o.goodsVi || null, goodsNameEn: o.goodsEn || null, hsCode: o.hs || null, declaredValueUsd: o.declared || null,
+    note: o.note || null, internalNote: null,
+  };
+};
+function expOpen() {
+  const keys = expCols().map((c) => c.key), valid = (l) => l.filter((k) => keys.includes(k));
+  let last = [];
+  try { const v = JSON.parse(expStore.get("skylane-order-export-last") || "[]"); if (Array.isArray(v)) last = valid(v); } catch {}
+  ui.exp = { chosen: last.length ? last : valid(OX.VISIBLE_COLUMNS), markL: [], markR: [], preset: "", saveAs: null, scope: ui.orders.sel.size ? "selected" : "filter", msg: null,
+    presets: OX.parsePresets(expStore.get(OX.PRESET_STORAGE_KEY)) };
+  expRender();
+}
+function expRender() {
+  const keep = [...document.querySelectorAll("#dlg [data-explist]")].map((x) => x.scrollTop);
+  expRenderInner();
+  document.querySelectorAll("#dlg [data-explist]").forEach((x, i) => (x.scrollTop = keep[i] || 0));
+}
+function expRenderInner() {
+  const e = ui.exp, cols = expCols(), lab = new Map(cols.map((c) => [c.key, c.label])), all = cols.map((c) => c.key);
+  const pending = all.filter((k) => !e.chosen.includes(k));
+  const total = visibleOrders().filter((o) => !ui.orders.status || o.status === ui.orders.status).length, nSel = ui.orders.sel.size;
+  const list = (side, title, keys, marked, empty) => `<div><p class="mb-1 text-sm font-medium" style="border-left:3px solid var(--accent);padding-left:8px">${title} <span class="text-xs muted">(${keys.length})</span></p>
+    <div class="card" data-explist style="height:300px;overflow:auto"><table class="t"><thead style="position:sticky;top:0;z-index:1"><tr><th style="width:44px">STT</th><th style="width:34px"><input type="checkbox" data-a="exp-all" data-side="${side}" ${keys.length && keys.every((k) => marked.includes(k)) ? "checked" : ""} aria-label="Chọn tất cả"></th><th>Tên cột</th></tr></thead><tbody>
+    ${keys.map((k, i) => `<tr data-a="exp-mark" data-side="${side}" data-k="${k}" data-expk="${side}:${k}" style="cursor:pointer;user-select:none;${marked.includes(k) ? "background:var(--soft)" : ""}" title="Bấm để chọn, bấm đúp để chuyển sang bên kia"><td class="muted">${i + 1}</td><td><input type="checkbox" ${marked.includes(k) ? "checked" : ""} tabindex="-1" style="pointer-events:none" aria-label="${esc(lab.get(k))}"></td><td>${esc(lab.get(k))}</td></tr>`).join("")}
+    </tbody></table>${keys.length ? "" : `<p class="p-6 text-center text-sm muted">${empty}</p>`}</div></div>`;
+  const mb = (a, label, title, dis) => `<button class="btn sm" style="width:42px;justify-content:center" data-a="${a}" title="${title}" aria-label="${title}" ${dis ? "disabled" : ""}>${label}</button>`;
+  openDialog("Tải xuống Excel — chọn cột", `<div class="grid gap-4">
+    <div class="grid gap-1"><span class="text-xs muted">Định dạng đã lưu (lưu trên trình duyệt này)</span><div class="flex flex-wrap items-center gap-2">
+      <select class="inp" style="width:240px" data-c="exp-preset"><option value="">— Chọn định dạng —</option>${e.presets.map((p) => `<option value="${esc(p.name)}" ${p.name === e.preset ? "selected" : ""}>${esc(p.name)} (${p.keys.length} cột)</option>`).join("")}</select>
+      <button class="btn o" data-a="exp-save" ${e.preset ? "" : "disabled"}>Lưu</button>
+      ${e.saveAs === null ? `<button class="btn o" data-a="exp-saveas">Lưu thành…</button>` : `<input class="inp" id="exp-name" style="width:210px" maxlength="60" placeholder="Tên định dạng, VD: Gửi kế toán"><button class="btn" data-a="exp-saveas-ok">OK</button><button class="btn g" data-a="exp-saveas-cancel">Hủy</button>`}
+      <button class="btn" style="background:#dc2626" data-a="exp-del" ${e.preset ? "" : "disabled"}>Xóa</button></div></div>
+    <div class="grid items-center gap-3" style="grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)">
+      ${list("L", "Cột chờ xuất", pending, e.markL, "Đã chọn hết các cột.")}
+      <div class="flex flex-col gap-2">${mb("exp-up", "↑", "Đưa cột đã đánh dấu lên", !e.markR.length)}${mb("exp-down", "↓", "Đưa cột đã đánh dấu xuống", !e.markR.length)}<div style="height:10px"></div>
+        ${mb("exp-add", "›", "Thêm cột đã đánh dấu", !e.markL.length)}${mb("exp-addall", "»", "Thêm tất cả", !pending.length)}${mb("exp-rmall", "«", "Bỏ tất cả", !e.chosen.length)}${mb("exp-rm", "‹", "Bỏ cột đã đánh dấu", !e.markR.length)}</div>
+      ${list("R", "Cột xuất (theo thứ tự)", e.chosen, e.markR, "Chưa có cột nào — chọn bên trái rồi bấm ›.")}
+    </div>
+    <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm"><label class="flex items-center gap-2"><input type="radio" name="exp-scope" data-c="exp-scope" value="filter" ${e.scope === "filter" ? "checked" : ""}> Tất cả đơn theo bộ lọc hiện tại (${total.toLocaleString("vi-VN")} đơn)</label>
+      <label class="flex items-center gap-2 ${nSel ? "" : "muted"}"><input type="radio" name="exp-scope" data-c="exp-scope" value="selected" ${e.scope === "selected" ? "checked" : ""} ${nSel ? "" : "disabled"}> Chỉ các đơn đã chọn (${nSel})</label></div>
+    ${e.msg ? `<div class="card p-3 text-sm" style="color:${e.msg[0] === "bad" ? "#dc2626" : "#047857"}">${esc(e.msg[1])}</div>` : ""}
+    <div class="flex flex-wrap items-center justify-between gap-2 border-t line pt-3"><span class="flex items-center gap-2"><button class="btn o" data-a="exp-visible">Xuất cột đang hiển thị</button><span class="text-xs muted">Xuất ngay đúng các cột đang thấy trên bảng Vận đơn.</span></span>
+      <span class="flex gap-2"><button class="btn" data-a="exp-run" ${e.chosen.length ? "" : "disabled"}>⬇ Xuất (${e.chosen.length} cột)</button><button class="btn o" data-a="close">Hủy</button></span></div>
+  </div>`, true);
+}
+async function expRun(keys) {
+  const e = ui.exp;
+  if (!keys.length) { e.msg = ["bad", "Chọn ít nhất 1 cột để xuất."]; return expRender(); }
+  if (!window.ExcelJS) return toast("Chưa tải được thư viện Excel — kiểm tra kết nối mạng rồi thử lại.", "bad");
+  expStore.set("skylane-order-export-last", JSON.stringify(keys));
+  const cols = OX.resolveColumns(keys, can("orders.viewMoney"));
+  const base = e.scope === "selected" && ui.orders.sel.size ? visibleOrders().concat(S.orders.filter((o) => inScope(o.customer))).filter((o, i, a) => a.indexOf(o) === i && ui.orders.sel.has(o.id))
+    : visibleOrders().filter((o) => !ui.orders.status || o.status === ui.orders.status);
+  const wb = new ExcelJS.Workbook();
+  OX.fillOrdersSheet(wb, base.map(toExportOrder), cols);
+  const name = OX.exportFileName();
+  if (await saveBlob(new Blob([await wb.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), name)) {
+    e.msg = ["ok", `Đã tải ${name} — ${base.length.toLocaleString("vi-VN")} đơn, ${cols.length} cột.`]; expRender();
+  }
+}
+const expSavePresets = (list) => { ui.exp.presets = list; expStore.set(OX.PRESET_STORAGE_KEY, JSON.stringify(list)); };
 
 // ---- Sao chép (menu chuột phải trên dòng / nút Sao chép)
 const rowsTsv = (list) => TT.toTsv(
@@ -1656,6 +1735,34 @@ const A = {
     save(); closeDialog(); ui.drafts.status = "CHO_XAC_NHAN"; render();
     toast(`Đã đưa ${a.valid.length} đơn vào Đơn hàng dự báo, chặn ${a.dupDb.length + a.res.duplicatesInFile.length} đơn trùng, bỏ qua ${a.errors.length} dòng lỗi.`);
   },
+  "exp-open": () => expOpen(),
+  "exp-mark": (el) => {
+    const e = ui.exp, k = el.dataset.k, side = el.dataset.side, m = side === "L" ? "markL" : "markR", id = `${side}:${k}`, now = Date.now();
+    // Bấm đúp (2 lần bấm liên tiếp cùng 1 cột) → chuyển sang danh sách bên kia. Tự nhận diện vì mỗi lần bấm danh sách được vẽ lại.
+    if (e.lastClick && e.lastClick.id === id && now - e.lastClick.t < 450) {
+      e.lastClick = null;
+      if (side === "L") { if (!e.chosen.includes(k)) e.chosen = [...e.chosen, k]; e.markL = e.markL.filter((x) => x !== k); }
+      else { e.chosen = e.chosen.filter((x) => x !== k); e.markR = e.markR.filter((x) => x !== k); }
+      return expRender();
+    }
+    e.lastClick = { id, t: now };
+    e[m] = e[m].includes(k) ? e[m].filter((x) => x !== k) : [...e[m], k];
+    expRender();
+  },
+  "exp-all": (el) => { const e = ui.exp, L = el.dataset.side === "L", keys = L ? expCols().map((c) => c.key).filter((k) => !e.chosen.includes(k)) : e.chosen; e[L ? "markL" : "markR"] = el.checked ? [...keys] : []; expRender(); },
+  "exp-add": () => { const e = ui.exp; e.chosen = OX.addKeys(e.chosen, e.markL, expCols().map((c) => c.key)); e.markL = []; expRender(); },
+  "exp-addall": () => { const e = ui.exp, all = expCols().map((c) => c.key); e.chosen = OX.addKeys(e.chosen, all, all); e.markL = []; expRender(); },
+  "exp-rmall": () => { ui.exp.chosen = []; ui.exp.markR = []; expRender(); },
+  "exp-rm": () => { const e = ui.exp; e.chosen = OX.removeKeys(e.chosen, e.markR); e.markR = []; expRender(); },
+  "exp-up": () => { ui.exp.chosen = OX.moveKeys(ui.exp.chosen, ui.exp.markR, -1); expRender(); },
+  "exp-down": () => { ui.exp.chosen = OX.moveKeys(ui.exp.chosen, ui.exp.markR, 1); expRender(); },
+  "exp-save": () => { const e = ui.exp; expSavePresets(OX.upsertPreset(e.presets, e.preset, e.chosen)); e.msg = ["ok", `Đã lưu định dạng “${e.preset}”.`]; expRender(); },
+  "exp-saveas": () => { ui.exp.saveAs = ""; expRender(); $("#exp-name")?.focus(); },
+  "exp-saveas-cancel": () => { ui.exp.saveAs = null; expRender(); },
+  "exp-saveas-ok": () => { const e = ui.exp, name = ($("#exp-name")?.value || "").trim(); if (!name || !e.chosen.length) return; expSavePresets(OX.upsertPreset(e.presets, name, e.chosen)); e.preset = name.slice(0, 60); e.saveAs = null; e.msg = ["ok", `Đã lưu định dạng “${name}”.`]; expRender(); },
+  "exp-del": () => { const e = ui.exp; expSavePresets(e.presets.filter((p) => p.name !== e.preset)); e.msg = ["ok", `Đã xóa định dạng “${e.preset}”.`]; e.preset = ""; expRender(); },
+  "exp-visible": () => expRun(OX.VISIBLE_COLUMNS.filter((k) => expCols().some((c) => c.key === k))),
+  "exp-run": () => expRun(ui.exp.chosen),
   "quote-run": () => { $$("[data-q]").forEach((i) => (ui.quote[i.dataset.q] = i.value)); ui.quote.ran = true; render(); },
   "qp-open": () => { $$("[data-q]").forEach((i) => (ui.quote[i.dataset.q] = i.value)); qpDialog(); },
   "qp-add": () => { ui.quote.rows.push(QI.emptyPackageRow()); qpReopen(`${ui.quote.rows.length - 1}:qty`); },
@@ -1923,6 +2030,8 @@ document.addEventListener("change", (e) => {
   else if (c === "dr-cust") { ui.drafts.cust = el.value; render(); }
   else if (c === "dr-sel") { const id = Number(el.value); el.checked ? ui.drafts.sel.add(id) : ui.drafts.sel.delete(id); render(); }
   else if (c === "dr-all") { $$('[data-c="dr-sel"]').forEach((x) => (el.checked ? ui.drafts.sel.add(Number(x.value)) : ui.drafts.sel.delete(Number(x.value)))); render(); }
+  else if (c === "exp-preset") { const e = ui.exp, p = e.presets.find((x) => x.name === el.value); e.preset = el.value; if (p) { e.chosen = OX.resolveColumns(p.keys, can("orders.viewMoney")).map((x) => x.key); e.markR = []; } expRender(); }
+  else if (c === "exp-scope") { ui.exp.scope = el.value; }
   else if (c === "imp-file") readImportFile(el.files[0]);
   else if (c === "tpl-cust") templateDialog(el.value);
   else if (c === "pi-file") readPriceFile(el.files[0]);

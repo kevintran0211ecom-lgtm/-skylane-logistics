@@ -14,6 +14,7 @@ export * as repriceSummary from "../lib/orders/reprice-summary";
 export * as importParse from "../lib/orders/import-parse";
 export * as edit from "../lib/orders/edit";
 export * as orderTemplate from "../lib/orders/template";
+export * as orderExport from "../lib/orders/export-columns";
 export * as totals from "../lib/orders/totals";
 export * as search from "../lib/search";
 export * as statementFmt from "../lib/statements/format";

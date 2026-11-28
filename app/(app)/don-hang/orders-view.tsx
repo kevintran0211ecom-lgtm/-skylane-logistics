@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import type { ColumnDef, RowSelectionState } from "@tanstack/react-table";
-import { Boxes, ChevronDown, Copy, Inbox, Lock, PencilLine, Search, X } from "lucide-react";
+import { Boxes, ChevronDown, Copy, Download, Inbox, Lock, PencilLine, Search, X } from "lucide-react";
 import { DataTable, type ColumnMeta } from "@/components/data-table";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -20,6 +20,7 @@ import { viDate } from "@/lib/pricing/versioning";
 import { formatKg } from "@/lib/labels";
 import { cn, formatMoney } from "@/lib/utils";
 import { BulkEditForm } from "./bulk-edit-form";
+import { ExportDialog } from "./export-dialog";
 import { PackagesForm } from "./packages-form";
 import { OrderDetailForm } from "./order-detail-form";
 import type { BulkField } from "@/lib/orders/schemas";
@@ -68,7 +69,7 @@ export function OrdersView(props: {
   const [selected, setSelected] = useState<RowSelectionState>({});
   // Lưu dữ liệu các dòng đã chọn (kể cả ở trang khác) để tính tổng & sao chép
   const [picked, setPicked] = useState<Record<string, OrderRow>>({});
-  const [dialog, setDialog] = useState<"bulk" | null>(null);
+  const [dialog, setDialog] = useState<"bulk" | "export" | null>(null);
   const [packagesOf, setPackagesOf] = useState<OrderRow | null>(null);
   const [detailOf, setDetailOf] = useState<OrderRow | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -340,6 +341,9 @@ export function OrdersView(props: {
           >
             <Copy /> Sao chép <ChevronDown />
           </Button>
+          <Button variant="outline" onClick={() => setDialog("export")} title="Tải file Excel, tự chọn cột">
+            <Download /> Tải xuống
+          </Button>
           {canBulk && (
             <Button variant="secondary" disabled={selectedIds.length === 0} onClick={() => setDialog("bulk")}>
               <PencilLine /> Sửa đổi hàng loạt
@@ -353,6 +357,15 @@ export function OrdersView(props: {
           )}
         </div>
       </div>
+
+      <ExportDialog
+        open={dialog === "export"}
+        onOpenChange={(v) => setDialog(v ? "export" : null)}
+        filter={filter}
+        total={props.total}
+        selectedIds={selectedIds}
+        showMoney={perms.showMoney}
+      />
 
       <DataTable
         columns={columns}

@@ -228,3 +228,69 @@ export const listOrderCustomers = (saleUserId?: string | null) =>
     .from(customers)
     .where(and(eq(customers.isActive, true), saleUserId ? eq(customers.saleUserId, saleUserId) : undefined))
     .orderBy(asc(customers.customerCode));
+
+/**
+ * Tải xuống Excel: mọi đơn theo bộ lọc hiện tại (hoặc chỉ các id đã chọn), tối đa `limit` dòng.
+ * Trả đủ trường cho lib/orders/export-columns (NCC & dịch vụ theo tuyến chỉ định, kích thước từng kiện).
+ */
+export async function listOrdersForExport(f: Omit<OrderFilter, "page" | "pageSize">, ids: number[] | null, limit = 20_000) {
+  const { where } = whereOf({ ...f, page: 1, pageSize: limit });
+  const dims = sql<string>`coalesce((
+    select string_agg(
+      rtrim(to_char(p.length_cm, 'FM999990.99'), '.') || 'x' || rtrim(to_char(p.width_cm, 'FM999990.99'), '.') || 'x' || rtrim(to_char(p.height_cm, 'FM999990.99'), '.'),
+      '; ' order by p.seq)
+    from order_packages p where p.order_id = ${orders.id} and (p.length_cm > 0 or p.width_cm > 0 or p.height_cm > 0)
+  ), '')`;
+  const iso = (c: AnyColumn) => sql<string | null>`to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`;
+  return db
+    .select({
+      billCode: orders.billCode,
+      trackingNumber: orders.trackingNumber,
+      customerCode: orders.customerCode,
+      customerName: customers.name,
+      routeCode: orders.routeCode,
+      assignedRouteCode: orders.assignedRouteCode,
+      supplierCode: routes.supplierCode,
+      serviceType: routes.serviceType,
+      destinationIso2: orders.destinationIso2,
+      status: orders.status,
+      debtStatus: orders.debtStatus,
+      pricingDate: orders.pricingDate,
+      createdAt: iso(orders.createdAt),
+      receivedAt: iso(orders.receivedAt),
+      exportedAt: iso(orders.exportedAt),
+      deliveredAt: iso(orders.deliveredAt),
+      packageCount: orders.packageCount,
+      dimensions: dims,
+      actualWeight: orders.actualWeight,
+      volumetricWeight: orders.volumetricWeight,
+      billedWeight: orders.billedWeight,
+      shippedWeight: orders.shippedWeight,
+      sellAmount: orders.sellAmount,
+      surchargeAmount: orders.surchargeAmount,
+      totalAmount: sql<string>`${orders.totalAmount}::text`,
+      costAmount: orders.costAmount,
+      profit: sql<string>`${orders.profit}::text`,
+      priceLocked: orders.priceLocked,
+      senderName: orders.senderName,
+      receiverName: orders.receiverName,
+      receiverPhone: orders.receiverPhone,
+      receiverEmail: orders.receiverEmail,
+      receiverAddress: orders.receiverAddress,
+      receiverCity: orders.receiverCity,
+      receiverState: orders.receiverState,
+      receiverPostalCode: orders.receiverPostalCode,
+      goodsDescription: orders.goodsDescription,
+      goodsNameEn: orders.goodsNameEn,
+      hsCode: orders.hsCode,
+      declaredValueUsd: orders.declaredValueUsd,
+      note: orders.note,
+      internalNote: orders.internalNote,
+    })
+    .from(orders)
+    .innerJoin(customers, eq(customers.customerCode, orders.customerCode))
+    .leftJoin(routes, eq(routes.routeCode, orders.assignedRouteCode))
+    .where(ids ? and(where, inArray(orders.id, ids)) : where)
+    .orderBy(...orderBy(f))
+    .limit(limit);
+}
