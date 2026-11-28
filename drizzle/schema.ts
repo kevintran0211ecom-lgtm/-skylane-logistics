@@ -77,6 +77,19 @@ export const customers = pgTable("customers", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
+// --- Cổng khách hàng: tài khoản đăng nhập của khách (id = auth.users.id) -------
+export const customerAccounts = pgTable("customer_accounts", {
+  id: uuid("id").primaryKey(),
+  customerCode: text("customer_code").notNull().references(() => customers.customerCode, { onUpdate: "cascade" }),
+  email: text("email").notNull().unique(),
+  isActive: boolean("is_active").notNull().default(true),
+  mustChangePassword: boolean("must_change_password").notNull().default(true),
+  lastLoginAt: ts("last_login_at"),
+  createdBy: uuid("created_by").references(() => appUsers.id, { onDelete: "set null" }),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
 export const suppliers = pgTable("suppliers", {
   supplierCode: text("supplier_code").primaryKey(),
   name: text("name").notNull(),
@@ -162,7 +175,7 @@ export const pricingPerKgTiers = pgTable("pricing_per_kg_tiers", {
 });
 
 // --- Vận đơn -----------------------------------------------------------------
-export const orderSource = pgEnum("order_source", ["MANUAL", "IMPORT", "SYNC"]);
+export const orderSource = pgEnum("order_source", ["MANUAL", "IMPORT", "SYNC", "PORTAL"]);
 
 export const orders = pgTable("orders", {
   id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
@@ -350,6 +363,8 @@ export const orderDrafts = pgTable("order_drafts", {
   orderId: bigint("order_id", { mode: "number" }).references(() => orders.id, { onDelete: "set null" }),
   rejectReason: text("reject_reason"),
   createdBy: uuid("created_by").references(() => appUsers.id, { onDelete: "set null" }),
+  /** Tài khoản khách đặt đơn trên cổng khách hàng (nguồn PORTAL) */
+  createdByAccount: uuid("created_by_account").references(() => customerAccounts.id, { onDelete: "set null" }),
   createdAt: ts("created_at").notNull().defaultNow(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
   decidedBy: uuid("decided_by").references(() => appUsers.id, { onDelete: "set null" }),

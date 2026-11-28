@@ -21,6 +21,8 @@ type Props = {
   suppliers: { code: string; name: string }[];
   /** Có danh sách khách → hiện ô Khách hàng (trang Tra cứu giá bán) */
   customers?: { code: string; name: string }[];
+  /** Cổng khách hàng: ẩn ô Nhà cung cấp (thông tin nội bộ) và Ngày áp giá (luôn giá hôm nay) */
+  hideSupplier?: boolean;
   autoFocus: boolean;
 };
 
@@ -47,7 +49,7 @@ function totals(rows: QuotePackageRow[]) {
   return { pieces, kg: kgs.length ? sumDecimal(kgs) : "", cbm: cbms.length ? sumDecimal(cbms.map((c) => Number(c).toFixed(6)), 4) : "" };
 }
 
-export function QuoteForm({ defaults, rows: initialRows, suppliers, customers, autoFocus }: Props) {
+export function QuoteForm({ defaults, rows: initialRows, suppliers, customers, hideSupplier, autoFocus }: Props) {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<QuotePackageRow[]>(initialRows.length ? initialRows : [emptyPackageRow()]);
   const active = rows.filter(filled);
@@ -70,7 +72,9 @@ export function QuoteForm({ defaults, rows: initialRows, suppliers, customers, a
         className={
           customers
             ? "grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-[220px_100px_120px_120px_auto_150px_110px_150px_auto]"
-            : "grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[100px_130px_130px_auto_160px_120px_150px_auto]"
+            : hideSupplier
+              ? "grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[100px_130px_130px_auto_120px_auto]"
+              : "grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[100px_130px_130px_auto_160px_120px_150px_auto]"
         }
       >
         {customers && (
@@ -107,17 +111,19 @@ export function QuoteForm({ defaults, rows: initialRows, suppliers, customers, a
         <Button type="button" variant="outline" onClick={() => setOpen(true)} className={multi ? "border-primary text-primary" : undefined}>
           <Boxes /> Kích thước thông tin{multi && ` (${t.pieces} kiện)`}
         </Button>
-        <Field label="Nhà cung cấp" htmlFor="ncc">
-          <NativeSelect id="ncc" name="ncc" defaultValue={defaults.ncc}>
-            <option value="">Tất cả</option>
-            {suppliers.map((s) => (
-              <option key={s.code} value={s.code}>
-                {s.code}
-                {s.name && s.name !== s.code ? ` — ${s.name}` : ""}
-              </option>
-            ))}
-          </NativeSelect>
-        </Field>
+        {!hideSupplier && (
+          <Field label="Nhà cung cấp" htmlFor="ncc">
+            <NativeSelect id="ncc" name="ncc" defaultValue={defaults.ncc}>
+              <option value="">Tất cả</option>
+              {suppliers.map((s) => (
+                <option key={s.code} value={s.code}>
+                  {s.code}
+                  {s.name && s.name !== s.code ? ` — ${s.name}` : ""}
+                </option>
+              ))}
+            </NativeSelect>
+          </Field>
+        )}
         <Field label="Dịch vụ" htmlFor="dv">
           <NativeSelect id="dv" name="dv" defaultValue={defaults.dv}>
             <option value="">Tất cả</option>
@@ -128,9 +134,11 @@ export function QuoteForm({ defaults, rows: initialRows, suppliers, customers, a
             ))}
           </NativeSelect>
         </Field>
-        <Field label="Ngày áp giá" htmlFor="date">
-          <Input id="date" name="date" type="date" defaultValue={defaults.date} />
-        </Field>
+        {!hideSupplier && (
+          <Field label="Ngày áp giá" htmlFor="date">
+            <Input id="date" name="date" type="date" defaultValue={defaults.date} />
+          </Field>
+        )}
         <Button type="submit">
           <Search /> Tra cứu
         </Button>

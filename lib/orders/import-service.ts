@@ -7,6 +7,7 @@ import { detectTemplateCustomer } from "./template";
 import type { Cell } from "@/lib/pricing/import-excel";
 import { parseCsv, parseOrderSheet, parseSheetUrl, type OrderDraft, type OrderParseResult } from "./import-parse";
 import { stageDrafts, type StageResult } from "./drafts-service";
+import { portalMissingFields } from "@/lib/portal/rules";
 
 export class OrderImportError extends Error {}
 
@@ -16,6 +17,8 @@ const SAMPLE = 50;
 export interface OrderImportOptions {
   source: "FILE" | "SHEET";
   defaultCustomerCode: string | null;
+  /** Cổng khách hàng: mọi dòng phải là đơn của defaultCustomerCode; bỏ tuyến chỉ định (khách không được đặt) */
+  lockCustomer?: boolean;
   sheetUrl: string | null;
   sheetTab: string | null;
 }
@@ -99,10 +102,25 @@ async function analyze(o: OrderImportOptions, file: File | null) {
   const { rows, label, templateCustomer } = await loadRows(o, file);
   const chosen = o.defaultCustomerCode?.trim().toUpperCase() || null;
   if (templateCustomer && chosen && templateCustomer !== chosen)
-    throw new OrderImportError(`File này là mẫu nhập đơn của khách ${templateCustomer}, nhưng bạn đang chọn ${chosen}. Chọn đúng khách hoặc để trống ô khách hàng.`);
+    throw new OrderImportError(
+      o.lockCustomer
+        ? `File này là mẫu nhập đơn của khách ${templateCustomer}, không phải của tài khoản ${chosen}. Hãy tải file mẫu trên cổng khách hàng.`
+        : `File này là mẫu nhập đơn của khách ${templateCustomer}, nhưng bạn đang chọn ${chosen}. Chọn đúng khách hoặc để trống ô khách hàng.`,
+    );
   const parsed: OrderParseResult = parseOrderSheet(rows, { defaultCustomerCode: chosen ?? templateCustomer });
   const errors = [...parsed.errors];
-  const drafts = parsed.drafts;
+  let drafts = parsed.drafts;
+  if (o.lockCustomer) {
+    for (const d of drafts.filter((x) => x.customerCode !== chosen))
+      errors.push({ row: d.rows[0], billCode: d.billCode, message: `mã khách ${d.customerCode} khác tài khoản đang đăng nhập (${chosen})` });
+    drafts = drafts.filter((x) => x.customerCode === chosen).map((x) => ({ ...x, assignedRouteCode: null }));
+    // Cùng trường bắt buộc như form đặt đơn trên cổng khách
+    drafts = drafts.filter((x) => {
+      const miss = portalMissingFields(x);
+      if (miss.length) errors.push({ row: x.rows[0], billCode: x.billCode, message: `thiếu ${miss.join(", ")}` });
+      return miss.length === 0;
+    });
+  }
 
   const custCodes = [...new Set(drafts.map((d) => d.customerCode))];
   const routeCodes = [...new Set(drafts.flatMap((d) => [d.routeCode, d.assignedRouteCode].filter((x): x is string => !!x)))];
@@ -162,10 +180,20 @@ export async function previewOrderImport(o: OrderImportOptions, file: File | nul
 }
 
 /** Đưa các đơn mới hợp lệ vào Đơn hàng dự báo (chờ nhân viên xác nhận) */
-export async function stageOrderImport(o: OrderImportOptions, file: File | null, userId: string | null): Promise<OrderImportResult> {
+export async function stageOrderImport(
+  o: OrderImportOptions,
+  file: File | null,
+  userId: string | null,
+  portal?: { accountId: string | null; email: string },
+): Promise<OrderImportResult> {
   const a = await analyze(o, file);
   if (a.valid.length === 0) throw new OrderImportError("Không có đơn mới hợp lệ để đưa vào Đơn hàng dự báo.");
-  const r = await stageDrafts(a.valid, { source: o.source === "SHEET" ? "SYNC" : "IMPORT", label: a.label, userId });
+  const r = await stageDrafts(
+    a.valid,
+    portal
+      ? { source: "PORTAL", label: `Cổng KH · ${portal.email} · ${a.label}`, userId: null, accountId: portal.accountId }
+      : { source: o.source === "SHEET" ? "SYNC" : "IMPORT", label: a.label, userId },
+  );
   if (o.source === "SHEET" && o.defaultCustomerCode && !o.sheetUrl) {
     await db.update(customers).set({ lastSyncedAt: new Date().toISOString() }).where(eq(customers.customerCode, o.defaultCustomerCode));
   }

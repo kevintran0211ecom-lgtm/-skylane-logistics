@@ -37,6 +37,9 @@ const MATRIX = {
   "pricing.view": ["ADMIN", "KE_TOAN"],
   "pricing.manage": ["ADMIN"],
   "users.manage": ["ADMIN"],
+  // Cổng khách hàng
+  "portal.accounts": ["ADMIN", "KE_TOAN"], // tạo / đặt lại mật khẩu / khóa tài khoản khách
+  "portal.viewAs": ["ADMIN", "KE_TOAN", "SALE"], // "Xem như khách" (Sale: chỉ khách mình) — chỉ xem
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof MATRIX;
@@ -76,6 +79,7 @@ export const ROUTE_PERMISSION: Record<string, Permission> = {
   "/bang-ke": "statements.view",
   "/doi-soat": "receipts.view",
   "/bao-gia": "quote.view",
+  "/cong-khach-hang": "portal.viewAs",
   "/gia-ban": "quote.view",
   "/nguoi-dung": "users.manage",
 };

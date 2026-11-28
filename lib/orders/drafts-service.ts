@@ -17,7 +17,7 @@ export const DRAFT_STATUS_LABEL: Record<DraftStatus, string> = {
   DA_XAC_NHAN: "Đã xác nhận",
   DA_LOAI: "Đã loại",
 };
-const SOURCE_LABEL = { MANUAL: "Nhập tay", IMPORT: "File Excel", SYNC: "Google Sheet" } as const;
+const SOURCE_LABEL = { MANUAL: "Nhập tay", IMPORT: "File Excel", SYNC: "Google Sheet", PORTAL: "Cổng khách hàng" } as const;
 type Source = keyof typeof SOURCE_LABEL;
 
 export interface StageResult {
@@ -33,7 +33,7 @@ const toData = (d: OrderDraft | DraftData): DraftData => {
 /** Thêm đơn vào vùng chờ; đơn trùng order_key bị bỏ qua (kể cả trùng phát sinh đồng thời) */
 export async function stageDrafts(
   drafts: (OrderDraft | DraftData)[],
-  o: { source: Source; label?: string | null; userId: string | null },
+  o: { source: Source; label?: string | null; userId: string | null; accountId?: string | null },
 ): Promise<StageResult> {
   if (!drafts.length) return { added: 0, skipped: 0 };
   const keys = drafts.map((d) => d.orderKey);
@@ -55,6 +55,7 @@ export async function stageDrafts(
           sourceLabel: o.label ?? SOURCE_LABEL[o.source],
           data: toData(d),
           createdBy: o.userId,
+          createdByAccount: o.accountId ?? null,
         })),
       )
       .onConflictDoNothing({ target: orderDrafts.orderKey })

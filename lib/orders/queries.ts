@@ -9,6 +9,7 @@ import type { OrderTotals } from "./totals";
 
 export interface OrderFilter extends Partial<OrderListFilter> {
   saleUserId?: string | null; // SALE: chỉ khách mình phụ trách
+  customerCode?: string | null; // Cổng khách hàng: chỉ đơn của khách đang đăng nhập
   page: number;
   pageSize: number;
 }
@@ -61,7 +62,7 @@ function orderBy(f: Partial<OrderListFilter>): SQL[] {
 }
 
 function whereOf(f: OrderFilter) {
-  const scope = f.saleUserId ? eq(customers.saleUserId, f.saleUserId) : undefined;
+  const scope = and(f.saleUserId ? eq(customers.saleUserId, f.saleUserId) : undefined, f.customerCode ? eq(orders.customerCode, f.customerCode) : undefined);
   const base = and(searchWhere(f.q), dateWhere(f), scope); // dùng cho số đếm các tab trạng thái
   return { base, where: and(base, f.status ? eq(orders.status, f.status) : undefined) };
 }

@@ -711,3 +711,28 @@ ALTER TABLE order_drafts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE receipts ADD COLUMN cancel_reason TEXT;
 
 
+
+-- =============================================================================
+-- 007 — CỔNG KHÁCH HÀNG (xem sql/migrations/007_customer_portal.sql)
+-- =============================================================================
+ALTER TYPE order_source ADD VALUE IF NOT EXISTS 'PORTAL';
+
+CREATE TABLE customer_accounts (
+  id                    UUID PRIMARY KEY,               -- = auth.users.id
+  customer_code         TEXT NOT NULL REFERENCES customers(customer_code) ON UPDATE CASCADE,
+  email                 TEXT NOT NULL,
+  is_active             BOOLEAN NOT NULL DEFAULT true,
+  must_change_password  BOOLEAN NOT NULL DEFAULT true,
+  last_login_at         TIMESTAMPTZ,
+  created_by            UUID REFERENCES app_users(id) ON DELETE SET NULL,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_customer_accounts_email UNIQUE (email),
+  CONSTRAINT ck_customer_accounts_email CHECK (email = lower(btrim(email)) AND email LIKE '%@%')
+);
+CREATE TRIGGER customer_accounts_updated_at BEFORE UPDATE ON customer_accounts
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE INDEX ix_customer_accounts_customer ON customer_accounts (customer_code);
+ALTER TABLE customer_accounts ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE order_drafts ADD COLUMN created_by_account UUID REFERENCES customer_accounts(id) ON DELETE SET NULL;

@@ -3,7 +3,7 @@ import { cache } from "react";
 import { redirect } from "next/navigation";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { appUsers } from "@/drizzle/schema";
+import { appUsers, customerAccounts } from "@/drizzle/schema";
 import { supabaseServer } from "@/lib/supabase/server";
 import { can, isScopedToOwnCustomers, type Permission, type Role } from "./permissions";
 
@@ -35,6 +35,8 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
 
   let [profile] = await db.select().from(appUsers).where(eq(appUsers.id, user.id));
   if (!profile) {
+    // Tài khoản cổng khách hàng không bao giờ là nhân viên (kể cả khi app_users còn trống)
+    if (await isCustomerAccount(user.id)) return null;
     const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(appUsers);
     if (n === 0) {
       [profile] = await db
@@ -54,10 +56,21 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
   };
 });
 
+export async function isCustomerAccount(id: string): Promise<boolean> {
+  const [a] = await db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.id, id));
+  return !!a;
+}
+
 /** Trang: bắt buộc đăng nhập + có quyền, không thì chuyển hướng */
 export async function requirePage(permission?: Permission): Promise<SessionUser> {
   const user = await getSessionUser();
-  if (!user) redirect("/khong-co-quyen?reason=account");
+  if (!user) {
+    // Khách hàng đăng nhập nhầm vào hệ thống nội bộ → về cổng khách hàng
+    const supabase = await supabaseServer();
+    const { data } = await supabase.auth.getUser();
+    if (data.user && (await isCustomerAccount(data.user.id))) redirect("/portal");
+    redirect("/khong-co-quyen?reason=account");
+  }
   if (permission && !can(user.role, permission)) redirect("/khong-co-quyen");
   return user;
 }

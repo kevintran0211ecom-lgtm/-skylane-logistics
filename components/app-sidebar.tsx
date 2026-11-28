@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BadgeDollarSign, BookOpenText, FileSpreadsheet, Inbox, LayoutDashboard, LogOut, Package, Receipt, Route, Scale, ShieldCheck, Tags, Users } from "lucide-react";
+import { BadgeDollarSign, BookOpenText, Globe, FileSpreadsheet, Inbox, LayoutDashboard, LogOut, Package, Receipt, Route, Scale, ShieldCheck, Tags, Users } from "lucide-react";
 import { signOut } from "@/lib/auth/actions";
 import { can, ROLE_LABEL, ROUTE_PERMISSION, type Role } from "@/lib/auth/permissions";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,7 @@ const NAV = [
     group: "Danh mục",
     items: [
       { href: "/khach-hang", label: "Khách hàng", icon: Users },
+      { href: "/cong-khach-hang", label: "Cổng khách hàng", icon: Globe },
       { href: "/nhom-gia", label: "Nhóm giá", icon: Tags },
       { href: "/tuyen", label: "Tuyến vận chuyển", icon: Route },
       { href: "/bang-gia", label: "Kho bảng giá", icon: BookOpenText },

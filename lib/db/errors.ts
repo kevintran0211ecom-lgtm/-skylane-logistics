@@ -19,6 +19,9 @@ const BY_CONSTRAINT: Record<string, string> = {
   ck_orders_bill_code: "Mã vận đơn không hợp lệ.",
   ck_orders_iso2: "Điểm đến phải là mã quốc gia ISO2.",
   ck_orders_overrides: "Trường ghi đè thủ công không hợp lệ.",
+  uq_drafts_order_key: "Mã vận đơn đã tồn tại (trùng với đơn khác đang chờ xác nhận).",
+  uq_customer_accounts_email: "Email này đã có tài khoản cổng khách hàng.",
+  ck_customer_accounts_email: "Email không hợp lệ.",
 };
 
 const BY_CODE: Record<string, string> = {

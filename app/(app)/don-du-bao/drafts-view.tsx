@@ -24,8 +24,8 @@ const TABS: { key: DraftStatus; label: string }[] = [
   { key: "DA_XAC_NHAN", label: "Đã xác nhận" },
   { key: "DA_LOAI", label: "Đã loại" },
 ];
-const SOURCE_TONE = { MANUAL: "muted", IMPORT: "info", SYNC: "success" } as const;
-const SOURCE_TEXT = { MANUAL: "Nhập tay", IMPORT: "Excel", SYNC: "Google Sheet" } as const;
+const SOURCE_TONE = { MANUAL: "muted", IMPORT: "info", SYNC: "success", PORTAL: "warning" } as const;
+const SOURCE_TEXT = { MANUAL: "Nhập tay", IMPORT: "Excel", SYNC: "Google Sheet", PORTAL: "Cổng KH" } as const;
 const dt = (iso: string | null) =>
   iso ? new Intl.DateTimeFormat("vi-VN", { timeZone: "Asia/Saigon", dateStyle: "short", timeStyle: "short" }).format(new Date(iso)) : "–";
 
